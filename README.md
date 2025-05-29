@@ -35,7 +35,7 @@ Combine several state-specific Google Sheets into **one canonical CSV** and push
 ## 3. Repository Layout (✅ IMPLEMENTED)
 ```text
 research-data-staging/
-├── src/
+├── src/                   # Application source code
 │   ├── __init__.py
 │   ├── config.py          # env vars + WIF credentials (simplified, no Pydantic)
 │   ├── drive_client.py    # Google Drive helper with rate limiting
@@ -45,21 +45,23 @@ research-data-staging/
 │   ├── worker.py          # async processing for one sheet
 │   ├── orchestrator.py    # fan-out/fan-in logic with Pacific Time
 │   └── lambda_handler.py  # AWS entry-point with Powertools
-├── mapping/
+├── mapping/               # Lookup tables
 │   ├── geo_state.csv      # State → geocode (✅ implemented)
 │   └── tax_cat.csv        # tax_cat text → 2-char code (✅ implemented)
-├── tests/
+├── tests/                 # Unit tests
 │   ├── __init__.py
 │   └── test_models.py     # Model tests with realistic data
-├── infrastructure/
+├── infrastructure/        # AWS infrastructure
 │   └── template.yaml      # Complete AWS SAM template
-├── lambda-package/        # Deployment package with all dependencies
-├── create_zip.py          # Utility script for creating deployment packages
-├── test_imports.py        # Import validation and basic functionality tests
+├── lambda-package/        # Deployment package (auto-generated)
+│   ├── src/               # Source code copy
+│   ├── mapping/           # Lookup tables copy
+│   └── [dependencies]/    # All Python dependencies
+├── build.py               # Complete build script
+├── create_zip.py          # ZIP creation utility
 ├── README.md
 ├── TODO.md
-├── WORKLOAD_IDENTITY_SETUP.md  # Complete WIF setup guide
-└── requirements.txt       # All dependencies specified
+└── requirements.txt       # Single requirements file
 ```
 
 ---
@@ -238,14 +240,18 @@ result = mapper._parse_percent_taxable('100%')  # Returns Decimal('1.0')
 
 ---
 
-## 12. Deployment Commands (✅ COMPLETED)
+## 12. Deployment Commands (✅ SIMPLIFIED)
 
-**Current Status**: Fully deployed and configured
-
-**Create new deployment package:**
+**Build deployment package:**
 ```bash
-python create_zip.py
+python build.py
 ```
+
+This single command will:
+1. Clean the lambda-package directory
+2. Install all dependencies from requirements.txt
+3. Copy source code and mapping files
+4. Create the deployment ZIP file
 
 **Manual invoke:**
 ```bash
@@ -260,7 +266,7 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 
 **Update function code:**
 1. Upload new ZIP via AWS Console → Lambda → Code source → Upload from .zip file
-2. Or use AWS CLI: `aws lambda update-function-code --function-name research-data-aggregation --zip-file fileb://research-data-aggregation-with-deps.zip`
+2. Or use AWS CLI: `aws lambda update-function-code --function-name research-data-aggregation --zip-file fileb://research-data-aggregation.zip`
 
 ---
 

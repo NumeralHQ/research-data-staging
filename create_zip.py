@@ -3,13 +3,18 @@
 Create ZIP file for Lambda deployment.
 
 This utility script creates a deployment package for AWS Lambda by:
-1. Taking all files from the lambda-package directory
+1. Taking all files from the lambda-package directory (which contains both dependencies and source code)
 2. Creating a compressed ZIP file with proper structure
 3. Reporting file count and size for deployment validation
 
+The lambda-package directory contains:
+- src/ - Our application source code
+- mapping/ - Lookup tables (geo_state.csv, tax_cat.csv)
+- All Python dependencies installed via pip install -t
+
 Usage: python create_zip.py
 
-The script will create 'research-data-aggregation-with-deps.zip' ready for Lambda upload.
+The script will create 'research-data-aggregation.zip' ready for Lambda upload.
 """
 
 import os
