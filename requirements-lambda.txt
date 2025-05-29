@@ -1,0 +1,21 @@
+# Core Google API libraries
+google-api-python-client==2.149.0
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# AWS libraries (boto3 is already available in Lambda runtime)
+aws-xray-sdk==2.14.0
+
+# Data processing (use simpler alternatives)
+# pydantic==2.9.2  # Skip for now due to compiled dependencies
+# pydantic-settings==2.6.1
+
+# Async support
+aiofiles==24.1.0
+
+# Timezone support
+pytz==2024.2
+
+# AWS Lambda Powertools
+aws-lambda-powertools==3.2.0 

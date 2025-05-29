@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Research Data Aggregation Service with Workload Identity Federation
+
+Parameters:
+  DriveFolder:
+    Type: String
+    Description: Google Drive folder ID containing spreadsheets
+    Default: "1VK3kgR-tS-nkTUSwq8_B-8JYl3zFkXFU"
+  
+  WifAudience:
+    Type: String
+    Description: Workload Identity Federation audience (format://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID)
+    NoEcho: true
+  
+  WifServiceAccount:
+    Type: String
+    Description: Google service account email for impersonation
+    NoEcho: true
+  
+  S3BucketName:
+    Type: String
+    Description: S3 bucket name for output files
+    Default: "research-aggregation"
+
+Globals:
+  Function:
+    Timeout: 900  # 15 minutes
+    MemorySize: 1024
+    Runtime: python3.13
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: research-data-aggregation
+        POWERTOOLS_METRICS_NAMESPACE: ResearchDataAggregation
+        LOG_LEVEL: INFO
+
+Resources:
+  # S3 Bucket for output files
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # Lambda execution role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "${OutputBucket}/*"
+                  - !GetAtt OutputBucket.Arn
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ConfigSecret
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: ResearchDataAggregation
+
+  # Secrets Manager for configuration
+  ConfigSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: research-data-aggregation/config
+      Description: Configuration for Research Data Aggregation Service
+      SecretString: !Sub |
+        {
+          "wif_audience": "${WifAudience}",
+          "wif_service_account": "${WifServiceAccount}"
+        }
+
+  # Main Lambda function
+  ResearchDataAggregationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: research-data-aggregation
+      CodeUri: ../src/
+      Handler: lambda_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DRIVE_FOLDER_ID: !Ref DriveFolder
+          WIF_AUDIENCE: !Ref WifAudience
+          WIF_SERVICE_ACCOUNT: !Ref WifServiceAccount
+          S3_BUCKET: !Ref S3BucketName
+          SECRETS_MANAGER_SECRET_NAME: !Ref ConfigSecret
+          SHEET_NAME: "Research"
+          HEADER_ROW: "4"
+          ADMIN_FILTER_VALUE: "Tag Level"
+          MAX_CONCURRENT_REQUESTS: "5"
+          RATE_LIMIT_DELAY: "0.1"
+          GEO_STATE_KEY: "mapping/geo_state.csv"
+          TAX_CAT_KEY: "mapping/tax_cat.csv"
+          ADMIN_COLUMN: "Admin"
+          COL_CURRENT_ID: "Current ID"
+          COL_BUSINESS_USE: "Business Use"
+          COL_PERSONAL_USE: "Personal Use"
+          COL_PERSONAL_TAX_CAT: "Personal tax_cat"
+          COL_PERSONAL_PERCENT_TAX: "Personal percent_taxable"
+          COL_BUSINESS_TAX_CAT: "Business tax_cat"
+          COL_BUSINESS_PERCENT_TAX: "Business percent_taxable"
+      Events:
+        ScheduledExecution:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 9 ? * SUN *)  # Weekly on Sundays at 2am PT (9am UTC)
+            Description: Weekly research data aggregation
+            Enabled: true
+
+  # CloudWatch Log Group
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ResearchDataAggregationFunction}"
+      RetentionInDays: 30
+
+  # CloudWatch Alarms
+  FunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-function-errors"
+      AlarmDescription: Lambda function errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ResearchDataAggregationFunction
+      TreatMissingData: notBreaching
+
+  FunctionDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-function-duration"
+      AlarmDescription: Lambda function duration approaching timeout
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 840000  # 14 minutes (close to 15-minute timeout)
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ResearchDataAggregationFunction
+      TreatMissingData: notBreaching
+
+  # Custom metrics for business logic
+  ProcessingSuccessMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref FunctionLogGroup
+      FilterPattern: "[timestamp, requestId, level=\"INFO\", message=\"Processing complete:\"]"
+      MetricTransformations:
+        - MetricNamespace: ResearchDataAggregation
+          MetricName: ProcessingSuccess
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ProcessingErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref FunctionLogGroup
+      FilterPattern: "[timestamp, requestId, level=\"ERROR\"]"
+      MetricTransformations:
+        - MetricNamespace: ResearchDataAggregation
+          MetricName: ProcessingErrors
+          MetricValue: "1"
+          DefaultValue: 0
+
+  FilesProcessedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref FunctionLogGroup
+      FilterPattern: "[timestamp, requestId, level=\"INFO\", message=\"Found\", count, files=\"Google\", sheets=\"Sheets\"]"
+      MetricTransformations:
+        - MetricNamespace: ResearchDataAggregation
+          MetricName: FilesFound
+          MetricValue: "$count"
+          DefaultValue: 0
+
+Outputs:
+  FunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref ResearchDataAggregationFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionName"
+
+  S3Bucket:
+    Description: S3 bucket for output files
+    Value: !Ref OutputBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-S3Bucket"
+
+  ConfigSecret:
+    Description: Secrets Manager secret for configuration
+    Value: !Ref ConfigSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-ConfigSecret"
+
+  LogGroup:
+    Description: CloudWatch Log Group
+    Value: !Ref FunctionLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-LogGroup" 
