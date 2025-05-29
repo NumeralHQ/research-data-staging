@@ -12,8 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Set required environment variables
 os.environ['DRIVE_FOLDER_ID'] = '1VK3kgR-tS-nkTUSwq8_B-8JYl3zFkXFU'
-os.environ['WIF_AUDIENCE'] = '//iam.googleapis.com/projects/1007801331947/locations/global/workloadIdentityPools/aws-lambda-pool/providers/aws-lambda-provider'
-os.environ['WIF_SERVICE_ACCOUNT'] = 'research-data-service@possible-origin-456416-f4.iam.gserviceaccount.com'
+os.environ['GOOGLE_SERVICE_ACCOUNT_SECRET'] = 'research-data-aggregation/google-service-account'
 os.environ['S3_BUCKET'] = 'research-aggregation-test'
 
 class LocalLookupTables:

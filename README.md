@@ -10,11 +10,11 @@ Combine several state-specific Google Sheets into **one canonical CSV** and push
   • **Scheduled**: EventBridge cron (weekly Sundays 2am PT / 9am UTC)
   • **On-demand**: manual invoke via AWS Console / CLI for ad-hoc runs
 - **AWS Lambda** – Python 3.13 runtime.  Orchestrates asynchronous jobs for each Google Sheet.
-- **Google Workspace APIs** – `drive`, `sheets` v4 via **Workload Identity Federation** (no service account keys!).
+- **Google Workspace APIs** – `drive`, `sheets` v4 via **service account credentials** stored in AWS Secrets Manager.
 - **Amazon S3** – destination bucket `research-aggregation/research-YYYYMMDD-HHMM.csv` (Pacific Time).  Additional prefixes:
   • `mapping/*` – lookup tables (`geo_state.csv`, `tax_cat.csv`)
   • `errors/errors-YYYYMMDD-HHMM.json` – list of bad sheets per run
-- **AWS IAM / KMS** – least-privilege roles, S3 encryption, Workload Identity Federation for secure Google API access.
+- **AWS IAM / KMS** – least-privilege roles, S3 encryption, Google service account keys securely stored in Secrets Manager.
 
 ```text
             +--------------+           +------------------+
@@ -50,7 +50,9 @@ research-data-staging/
 │   └── tax_cat.csv        # tax_cat text → 2-char code (✅ implemented)
 ├── tests/                 # Unit tests
 │   ├── __init__.py
-│   └── test_models.py     # Model tests with realistic data
+│   ├── test_models.py     # Model validation and CSV output tests
+│   ├── test_imports.py    # Import validation and basic functionality
+│   └── test_geocode.py    # Geocode lookup functionality tests
 ├── infrastructure/        # AWS infrastructure
 │   └── template.yaml      # Complete AWS SAM template
 ├── lambda-package/        # Deployment package (auto-generated)
@@ -59,6 +61,7 @@ research-data-staging/
 │   └── [dependencies]/    # All Python dependencies
 ├── build.py               # Complete build script
 ├── create_zip.py          # ZIP creation utility
+├── test_config.env        # Environment variables for local testing
 ├── README.md
 ├── TODO.md
 └── requirements.txt       # Single requirements file
@@ -84,16 +87,14 @@ pip install -r requirements.txt
 ```
 
 ### 2. Google Cloud Setup (✅ COMPLETED)
-**Using Workload Identity Federation (WIF) - No service account keys needed!**
+**Using Google Service Account with keys stored in AWS Secrets Manager**
 
-- **Project**: `possible-origin-456416-f4` (Project Number: 1007801331947)
-- **APIs Enabled**: Drive API, Sheets API, IAM Credentials API
-- **Workload Identity Pool**: `aws-lambda-pool`
-- **AWS Provider**: `aws-lambda-provider`
-- **Service Account**: `research-data-service@possible-origin-456416-f4.iam.gserviceaccount.com`
-- **Drive Folder Shared**: ✅ with service account
+- **Project**: Google Cloud project with Drive and Sheets APIs enabled
+- **Service Account**: Created with appropriate permissions for Drive and Sheets access
+- **Service Account Key**: JSON key file stored securely in AWS Secrets Manager
+- **Drive Folder Shared**: ✅ with service account email address
 
-See `WORKLOAD_IDENTITY_SETUP.md` for complete setup instructions.
+**Security**: Service account keys are stored in AWS Secrets Manager and loaded at runtime, never stored in code or environment variables.
 
 ### 3. AWS Deployment (✅ COMPLETED)
 
@@ -105,8 +106,7 @@ See `WORKLOAD_IDENTITY_SETUP.md` for complete setup instructions.
 **Environment Variables Configured:**
 ```bash
 DRIVE_FOLDER_ID=1VK3kgR-tS-nkTUSwq8_B-8JYl3zFkXFU
-WIF_AUDIENCE=//iam.googleapis.com/projects/1007801331947/locations/global/workloadIdentityPools/aws-lambda-pool/providers/aws-lambda-provider
-WIF_SERVICE_ACCOUNT=research-data-service@possible-origin-456416-f4.iam.gserviceaccount.com
+GOOGLE_SERVICE_ACCOUNT_SECRET=research-data-aggregation/google-service-account
 S3_BUCKET=research-aggregation
 # ... (all other configuration variables)
 ```
@@ -119,8 +119,7 @@ S3_BUCKET=research-aggregation
 | Variable | Value | Purpose |
 |----------|-------|---------|
 | `DRIVE_FOLDER_ID`           | `1VK3kgR-tS-nkTUSwq8_B-8JYl3zFkXFU` | Source folder |
-| `WIF_AUDIENCE`              | `//iam.googleapis.com/projects/...` | Workload Identity Federation audience |
-| `WIF_SERVICE_ACCOUNT`       | `research-data-service@...` | Service account for impersonation |
+| `GOOGLE_SERVICE_ACCOUNT_SECRET` | `research-data-aggregation/google-service-account` | Secret name for Google service account |
 | `S3_BUCKET`                 | `research-aggregation` | S3 bucket name |
 | `MAX_CONCURRENT_REQUESTS`   | `5` | Fan-out degree |
 | `SHEET_NAME`                | `Research` | Sheet tab to scan |
@@ -184,22 +183,42 @@ See `mapper.py` for canonical reference.  Key features:
 
 ---
 
-## 9. Local Development & Testing (✅ WORKING)
+## 9. Local Development & Testing (✅ COMPREHENSIVE)
 
-**Run import validation:**
+**Set up local testing environment:**
 ```bash
-python test_imports.py
+# Copy test environment variables (optional)
+cp test_config.env .env  # or source test_config.env
 ```
 
-**Run unit tests:**
+**Run comprehensive test suite:**
 ```bash
+# Run all tests with pytest
 pytest tests/ -v
+
+# Or run individual test files
+python tests/test_imports.py      # Import validation and basic functionality
+python tests/test_geocode.py      # Geocode lookup functionality  
+pytest tests/test_models.py -v    # Model validation and CSV output
 ```
 
-**Create deployment package:**
+**Test specific functionality:**
 ```bash
-python create_zip.py
+# Test imports and basic functionality
+python tests/test_imports.py
+
+# Test geocode lookup with example filenames
+python tests/test_geocode.py
+
+# Build deployment package
+python build.py
 ```
+
+**Available Test Files:**
+- **`test_imports.py`**: Validates all module imports and basic functionality without external dependencies
+- **`test_models.py`**: Tests Record model creation, validation, and CSV output formatting
+- **`test_geocode.py`**: Tests geocode lookup from filenames using local mapping files
+- **`test_config.env`**: Environment variables for local testing (can be sourced or copied to `.env`)
 
 **Test percentage parsing:**
 ```python
@@ -232,7 +251,7 @@ result = mapper._parse_percent_taxable('100%')  # Returns Decimal('1.0')
 ---
 
 ## 11. Security Features (✅ ENHANCED)
-- **Workload Identity Federation** for Google credentials (no service account keys stored!)
+- **Google Service Account Keys** stored securely in AWS Secrets Manager (never in code or environment variables)
 - **S3 bucket** with encryption at rest and public access blocked
 - **IAM roles** with least-privilege policies
 - **TLS 1.2** enforced for all Google API calls
@@ -282,10 +301,13 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 - **Monitoring**: CloudWatch integration with structured logging
 
 ### 🧪 **Testing Status**
-- ✅ All imports working correctly
-- ✅ Basic functionality tests passing
-- ✅ Percentage parsing validated (`'100%'` → `'1.000000'`)
-- ✅ Customer field updated (`customer="BB"` for business)
+- ✅ **Import validation**: All modules load correctly (`test_imports.py`)
+- ✅ **Basic functionality**: Core logic working without external dependencies (`test_imports.py`)
+- ✅ **Model validation**: Record creation, validation, and CSV output (`test_models.py`)
+- ✅ **Geocode lookup**: State name extraction from filenames (`test_geocode.py`)
+- ✅ **Percentage parsing**: Handles `'100%'` → `'1.000000'` conversion
+- ✅ **Customer field mapping**: Business="BB", Personal="99" validated
+- ✅ **CSV output format**: Correct column order and data types verified
 - 🔄 **Next**: End-to-end Lambda test with Google APIs
 
 ### 📊 **Expected Output**
