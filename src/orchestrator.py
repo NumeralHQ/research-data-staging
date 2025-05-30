@@ -34,11 +34,11 @@ class ResearchDataOrchestrator:
         # Pacific timezone for timestamps
         self.pacific_tz = pytz.timezone('America/Los_Angeles')
     
-    def _generate_timestamp_key(self, base_name: str, extension: str = "csv") -> str:
-        """Generate a timestamped key using Pacific Time."""
+    def _generate_output_folder(self) -> str:
+        """Generate a timestamped output folder using Pacific Time."""
         now = datetime.now(self.pacific_tz)
         timestamp = now.strftime("%Y%m%d-%H%M")
-        return f"{base_name}-{timestamp}.{extension}"
+        return f"output-{timestamp}"
     
     def _create_csv_content(self, records: List[Record]) -> str:
         """Create CSV content from records."""
@@ -58,9 +58,9 @@ class ResearchDataOrchestrator:
         logger.info(f"Generated CSV with {len(records)} records")
         return content
     
-    async def _upload_csv_to_s3(self, csv_content: str) -> str:
+    async def _upload_csv_to_s3(self, csv_content: str, output_folder: str) -> str:
         """Upload CSV content to S3 and return the key."""
-        key = self._generate_timestamp_key("research")
+        key = f"{output_folder}/results.csv"
         
         try:
             self.s3_client.put_object(
@@ -77,12 +77,12 @@ class ResearchDataOrchestrator:
             logger.error(f"Error uploading CSV to S3: {e}")
             raise
     
-    async def _upload_errors_to_s3(self, errors: List[Dict[str, Any]]) -> Optional[str]:
+    async def _upload_errors_to_s3(self, errors: List[Dict[str, Any]], output_folder: str) -> Optional[str]:
         """Upload error information to S3 if there are any errors."""
         if not errors:
             return None
         
-        key = f"errors/{self._generate_timestamp_key('errors', 'json')}"
+        key = f"{output_folder}/errors.json"
         
         try:
             # Convert errors to JSON
@@ -123,6 +123,10 @@ class ResearchDataOrchestrator:
         """
         logger.info("Starting research data aggregation process")
         
+        # Generate output folder for this run
+        output_folder = self._generate_output_folder()
+        logger.info(f"Output folder for this run: {output_folder}")
+        
         try:
             # Step 1: List all spreadsheets in the folder
             logger.info(f"Listing spreadsheets in folder: {config.drive_folder_id}")
@@ -132,6 +136,7 @@ class ResearchDataOrchestrator:
                 logger.warning("No spreadsheet files found in the specified folder")
                 return {
                     "success": True,
+                    "output_folder": output_folder,
                     "files_processed": 0,
                     "records_generated": 0,
                     "errors": 0,
@@ -166,16 +171,17 @@ class ResearchDataOrchestrator:
             if all_records:
                 logger.info(f"Generating CSV with {len(all_records)} records")
                 csv_content = self._create_csv_content(all_records)
-                csv_key = await self._upload_csv_to_s3(csv_content)
+                csv_key = await self._upload_csv_to_s3(csv_content, output_folder)
             else:
                 logger.warning("No records generated, skipping CSV upload")
             
             # Step 6: Upload error log if there are errors
-            error_key = await self._upload_errors_to_s3(failed_results)
+            error_key = await self._upload_errors_to_s3(failed_results, output_folder)
             
             # Step 7: Return results
             result = {
                 "success": True,
+                "output_folder": output_folder,
                 "files_processed": len(files),
                 "records_generated": len(all_records),
                 "errors": len(failed_results),
@@ -190,6 +196,7 @@ class ResearchDataOrchestrator:
             logger.error(f"Fatal error in processing: {e}")
             return {
                 "success": False,
+                "output_folder": output_folder,
                 "error": str(e),
                 "files_processed": 0,
                 "records_generated": 0,

@@ -11,9 +11,11 @@ Combine several state-specific Google Sheets into **one canonical CSV** and push
   • **On-demand**: manual invoke via AWS Console / CLI for ad-hoc runs
 - **AWS Lambda** – Python 3.13 runtime.  Orchestrates asynchronous jobs for each Google Sheet with **true concurrent processing**.
 - **Google Workspace APIs** – `drive`, `sheets` v4 via **Workload Identity Federation** (no service account keys required).
-- **Amazon S3** – destination bucket `research-aggregation/research-YYYYMMDD-HHMM.csv` (Pacific Time).  Additional prefixes:
+- **Amazon S3** – destination bucket `research-aggregation` with organized folder structure:
+  • `output-YYYYMMDD-HHMM/` – timestamped folders for each run (Pacific Time)
+    - `results.csv` – final aggregated data
+    - `errors.json` – processing errors (if any)
   • `mapping/*` – lookup tables (`geo_state.csv`, `tax_cat.csv`)
-  • `errors/errors-YYYYMMDD-HHMM.json` – list of bad sheets per run
 - **AWS IAM / KMS** – least-privilege roles, S3 encryption, Workload Identity Federation for secure Google API access.
 
 ```text
@@ -156,8 +158,8 @@ The generated CSV will always emit columns in **this exact order**:
    b. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
    c. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
 6. `orchestrator` gathers all `Record`s, streams them into a `csv.writer` **in the fixed column order**.
-7. Upload to S3 under `research-YYYYMMDD-HHMM.csv` (timestamp in America/Los_Angeles).
-8. If any sheets were skipped due to errors, dump their details to `/errors/errors-YYYYMMDD-HHMM.json`; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
+7. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload `results.csv` (timestamp in America/Los_Angeles).
+8. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
 
@@ -408,7 +410,7 @@ When running successfully, the service will:
 1. Process ~51 Google Sheets files from Drive folder **concurrently**
 2. Complete processing in **20-30 seconds** (vs 157 seconds sequential)
 3. Generate 2 CSV records per "Tag Level" row (Business + Personal)
-4. Upload final CSV to S3: `research-YYYYMMDD-HHMM.csv`
+4. Upload final CSV to S3: `output-YYYYMMDD-HHMM/results.csv`
 5. Log processing statistics and performance metrics
 6. Send CloudWatch metrics for monitoring
 
@@ -437,7 +439,7 @@ When running successfully, the service will:
 
 **Logs Location:**
 - CloudWatch Log Group: `/aws/lambda/research-data-aggregation`
-- Error files: `s3://research-aggregation/errors/`
+- Output files: `s3://research-aggregation/output-YYYYMMDD-HHMM/`
 - Performance metrics: CloudWatch custom metrics namespace `ResearchDataAggregation`
 
 ---
