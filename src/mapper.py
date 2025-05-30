@@ -42,17 +42,21 @@ class RowMapper:
         return self.taxable_mappings.get(taxable_upper)
     
     def _parse_percent_taxable(self, percent_text: str) -> Optional[Decimal]:
-        """Parse percent taxable value, removing % and converting to decimal."""
+        """Parse percent taxable value, removing % symbol if present."""
         if not percent_text:
             return None
         
         try:
-            # Remove % symbol and any whitespace
-            clean_text = percent_text.strip().replace('%', '')
+            # Check if the value contains a % symbol
+            if '%' in percent_text:
+                # Remove % symbol and any whitespace, then divide by 100
+                clean_text = percent_text.strip().replace('%', '')
+                percent_value = Decimal(clean_text) / 100
+            else:
+                # No % symbol, treat as already in decimal form
+                percent_value = Decimal(percent_text.strip())
             
-            # Convert to decimal and divide by 100
-            percent_value = Decimal(clean_text)
-            return percent_value / 100
+            return percent_value
             
         except (InvalidOperation, ValueError) as e:
             logger.warning(f"Could not parse percent value '{percent_text}': {e}")
@@ -74,7 +78,7 @@ class RowMapper:
         self, 
         row: List[Any], 
         header_map: Dict[str, int], 
-        filename: str,
+        geocode: str,  # Pass geocode as parameter instead of looking it up
         config
     ) -> Tuple[Optional[Record], Optional[Record]]:
         """
@@ -83,19 +87,13 @@ class RowMapper:
         Args:
             row: List of cell values from the spreadsheet row
             header_map: Mapping of column names to indices
-            filename: Name of the source file (for geocode lookup)
+            geocode: Pre-determined geocode for this sheet
             config: Configuration object
             
         Returns:
             Tuple of (business_record, personal_record), either can be None if invalid
         """
         try:
-            # Get geocode from filename
-            geocode = self.lookup_tables.get_geocode_for_filename(filename)
-            if not geocode:
-                logger.error(f"Could not determine geocode for filename: {filename}")
-                return None, None
-            
             # Extract common values
             current_id = self._get_cell_value(row, header_map.get('current_id'))
             if not current_id:
@@ -156,7 +154,7 @@ class RowMapper:
         header_map: Dict[str, int], 
         filename: str,
         config
-    ) -> List[Record]:
+    ) -> Tuple[List[Record], Optional[str]]:
         """
         Process all rows from a sheet and return valid records.
         
@@ -167,26 +165,34 @@ class RowMapper:
             config: Configuration object
             
         Returns:
-            List of valid Record objects
+            Tuple of (List of valid Record objects, error_message if geocode lookup failed)
         """
+        # First, get geocode from filename (do this once per sheet)
+        geocode = self.lookup_tables.get_geocode_for_filename(filename)
+        if not geocode:
+            error_msg = f"Could not determine geocode for filename: {filename}"
+            logger.error(error_msg)
+            return [], error_msg
+        
         records = []
         admin_index = header_map.get('admin')
         
         if admin_index is None:
-            logger.error(f"Admin column not found in header map for {filename}")
-            return records
+            error_msg = f"Admin column not found in header map for {filename}"
+            logger.error(error_msg)
+            return [], error_msg
         
         for row_idx, row in enumerate(rows, start=1):
             try:
                 # Check if this row has the admin match value
                 admin_value = self._get_cell_value(row, admin_index)
                 
-                if admin_value.upper() != config.admin_match_value.upper():
+                if admin_value.upper() != config.admin_filter_value.upper():
                     continue  # Skip rows that don't match
                 
-                # Convert row to records
+                # Convert row to records (pass geocode as parameter)
                 business_record, personal_record = self.convert_row_to_records(
-                    row, header_map, filename, config
+                    row, header_map, geocode, config
                 )
                 
                 # Add valid records
@@ -204,4 +210,4 @@ class RowMapper:
                 continue
         
         logger.info(f"Processed {len(records)} records from {filename}")
-        return records 
+        return records, None  # No error 

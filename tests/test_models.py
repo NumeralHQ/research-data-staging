@@ -4,6 +4,7 @@ import pytest
 from decimal import Decimal
 
 from src.models import Record, CustomerType, LookupTables
+from src.mapper import RowMapper
 
 
 def test_record_creation():
@@ -80,6 +81,20 @@ def test_csv_headers():
     ]
     
     assert headers == expected
+
+
+def test_percentage_parsing():
+    """Test percentage parsing functionality."""
+    lookup_tables = LookupTables('test')
+    mapper = RowMapper(lookup_tables)
+    
+    # Test various percentage formats
+    assert mapper._parse_percent_taxable('100%') == Decimal('1.0')
+    assert mapper._parse_percent_taxable('8.75%') == Decimal('0.0875')
+    assert mapper._parse_percent_taxable('0%') == Decimal('0')
+    assert mapper._parse_percent_taxable('1.0') == Decimal('1.0')  # No % symbol
+    assert mapper._parse_percent_taxable('') is None  # Empty string
+    assert mapper._parse_percent_taxable('invalid') is None  # Invalid input
 
 
 if __name__ == "__main__":

@@ -139,7 +139,7 @@ Resources:
           HEADER_ROW: "4"
           ADMIN_FILTER_VALUE: "Tag Level"
           MAX_CONCURRENT_REQUESTS: "5"
-          RATE_LIMIT_DELAY: "0.1"
+          RATE_LIMIT_DELAY: "0.05"
           GEO_STATE_KEY: "mapping/geo_state.csv"
           TAX_CAT_KEY: "mapping/tax_cat.csv"
           ADMIN_COLUMN: "Admin"

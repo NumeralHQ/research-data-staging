@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import time
 from typing import List, Dict, Any, Optional
+import uuid
 
 from .config import Config
 from .config import config
@@ -16,9 +18,13 @@ logger = logging.getLogger(__name__)
 class SheetWorker:
     """Worker for processing individual Google Sheets files."""
     
-    def __init__(self, sheets_client: SheetsClient, row_mapper: RowMapper):
-        self.sheets_client = sheets_client
+    def __init__(self, row_mapper: RowMapper):
+        # Create a dedicated SheetsClient for this worker instance
+        self.sheets_client = SheetsClient()
         self.row_mapper = row_mapper
+        
+        # Create a unique worker ID for logging
+        self.worker_id = str(uuid.uuid4())[:8]
     
     async def process_sheet(self, file_info: Dict[str, Any], header_mapping: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
         """
@@ -34,7 +40,8 @@ class SheetWorker:
         file_id = file_info['id']
         file_name = file_info['name']
         
-        logger.info(f"Processing sheet: {file_name} ({file_id})")
+        start_time = time.time()
+        logger.info(f"🚀 Worker[{self.worker_id}] Starting: {file_name} ({file_id})")
         
         try:
             # Get header mapping (use provided one or fetch new)
@@ -75,55 +82,39 @@ class SheetWorker:
                     'rows_processed': 0
                 }
             
-            # Check for Admin column
-            admin_col_idx = header_mapping.get('admin')
-            if admin_col_idx is None:
-                error_msg = f"Admin column not found in headers"
-                logger.error(f"{file_name}: {error_msg}")
+            # Process rows using the mapper's sheet-level processing
+            records, geocode_error = self.row_mapper.process_sheet_rows(
+                sheet_data,
+                header_mapping,
+                file_name,
+                config
+            )
+            
+            # If there was a geocode error, mark the sheet as failed
+            if geocode_error:
                 return {
                     'file_id': file_id,
                     'file_name': file_name,
                     'success': False,
-                    'error': error_msg,
+                    'error': geocode_error,
                     'records': [],
                     'rows_processed': 0
                 }
             
-            # Process rows
-            records = []
+            # Count rows that matched the admin filter
+            admin_col_idx = header_mapping.get('admin')
             rows_processed = 0
-            
-            for row_idx, row_data in enumerate(sheet_data):
-                try:
-                    # Check if row has enough columns
-                    if len(row_data) <= admin_col_idx:
-                        continue
-                    
-                    # Check Admin column filter
-                    admin_value = str(row_data[admin_col_idx]).strip() if row_data[admin_col_idx] else ""
-                    if admin_value != config.admin_filter_value:
-                        continue
-                    
-                    # Map row to records
-                    business_record, personal_record = self.row_mapper.convert_row_to_records(
-                        row_data, 
-                        header_mapping, 
-                        file_name,
-                        config
-                    )
-                    
-                    # Add valid records to the list
-                    if business_record:
-                        records.append(business_record)
-                    if personal_record:
-                        records.append(personal_record)
-                    rows_processed += 1
-                    
-                except Exception as e:
-                    logger.warning(f"{file_name} row {data_start_row + row_idx}: Error processing row: {e}")
-                    continue
-            
+            if admin_col_idx is not None:
+                for row_data in sheet_data:
+                    if len(row_data) > admin_col_idx:
+                        admin_value = str(row_data[admin_col_idx]).strip() if row_data[admin_col_idx] else ""
+                        if admin_value == config.admin_filter_value:
+                            rows_processed += 1
+
             logger.info(f"{file_name}: Processed {rows_processed} rows, generated {len(records)} records")
+            
+            elapsed_time = time.time() - start_time
+            logger.info(f"✅ Worker[{self.worker_id}] Completed: {file_name} in {elapsed_time:.2f}s")
             
             return {
                 'file_id': file_id,
@@ -134,8 +125,9 @@ class SheetWorker:
             }
             
         except Exception as e:
+            elapsed_time = time.time() - start_time
             error_msg = f"Failed to process sheet: {str(e)}"
-            logger.error(f"{file_name}: {error_msg}")
+            logger.error(f"❌ Worker[{self.worker_id}] Failed: {file_name} after {elapsed_time:.2f}s - {error_msg}")
             return {
                 'file_id': file_id,
                 'file_name': file_name,
@@ -148,7 +140,6 @@ class SheetWorker:
 
 async def process_sheets_concurrently(
     file_list: List[Dict[str, Any]], 
-    sheets_client: SheetsClient, 
     row_mapper: RowMapper,
     max_concurrency: Optional[int] = None
 ) -> List[Dict[str, Any]]:
@@ -157,7 +148,6 @@ async def process_sheets_concurrently(
     
     Args:
         file_list: List of file metadata from Drive API
-        sheets_client: Sheets API client
         row_mapper: Row mapping logic
         max_concurrency: Maximum concurrent operations (defaults to config value)
         
@@ -174,12 +164,14 @@ async def process_sheets_concurrently(
     logger.info(f"Processing {len(file_list)} sheets with max concurrency {max_concurrency}")
     
     # Optimization: Get header mapping from first file and reuse for all
+    # Create a temporary SheetsClient just for header mapping
+    temp_sheets_client = SheetsClient()
     header_mapping = None
     if file_list:
         first_file = file_list[0]
         try:
             logger.info(f"Getting header mapping from first file: {first_file['name']}")
-            header_mapping = await sheets_client.get_header_mapping(
+            header_mapping = await temp_sheets_client.get_header_mapping(
                 first_file['id'],
                 config.sheet_name,
                 config.header_row
@@ -191,12 +183,19 @@ async def process_sheets_concurrently(
     
     async def process_with_semaphore(file_info: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single file with semaphore control."""
+        logger.info(f"🔄 Acquiring semaphore for: {file_info['name']}")
         async with semaphore:
-            worker = SheetWorker(sheets_client, row_mapper)
-            return await worker.process_sheet(file_info, header_mapping)
+            logger.info(f"🎯 Processing (semaphore acquired): {file_info['name']}")
+            worker = SheetWorker(row_mapper)
+            result = await worker.process_sheet(file_info, header_mapping)
+            logger.info(f"🔓 Releasing semaphore for: {file_info['name']}")
+            return result
     
     # Process all files concurrently
+    logger.info(f"🚀 Creating {len(file_list)} concurrent tasks...")
     tasks = [process_with_semaphore(file_info) for file_info in file_list]
+    
+    logger.info(f"⏳ Waiting for all {len(tasks)} tasks to complete...")
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Handle any exceptions that occurred

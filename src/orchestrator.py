@@ -143,7 +143,6 @@ class ResearchDataOrchestrator:
             logger.info(f"Processing {len(files)} files with max concurrency {config.max_concurrent_requests}")
             results = await process_sheets_concurrently(
                 files, 
-                self.sheets_client, 
                 self.row_mapper,
                 config.max_concurrent_requests
             )

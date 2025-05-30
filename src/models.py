@@ -179,7 +179,7 @@ class LookupTables:
         if self._state_name_to_code is None:
             self._state_name_to_code = {
                 "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
-                "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE",
+                "CALIFORNIA": "CA", "COLORADO": "CO", "CONNECTICUT": "CT", "DELAWARE": "DE", "DISTRICT OF COLUMBIA": "DC",
                 "FLORIDA": "FL", "GEORGIA": "GA", "HAWAII": "HI", "IDAHO": "ID",
                 "ILLINOIS": "IL", "INDIANA": "IN", "IOWA": "IA", "KANSAS": "KS",
                 "KENTUCKY": "KY", "LOUISIANA": "LA", "MAINE": "ME", "MARYLAND": "MD",
@@ -200,7 +200,11 @@ class LookupTables:
         state_map = self.get_state_name_to_code_map()
         geocode_map = self.get_geocode_map()
         
-        for state_name, state_code in state_map.items():
+        # Sort states by length (longest first) to prioritize more specific matches
+        # This ensures "WEST VIRGINIA" is checked before "VIRGINIA"
+        sorted_states = sorted(state_map.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for state_name, state_code in sorted_states:
             if state_name in filename_upper:
                 return geocode_map.get(state_code)
         
