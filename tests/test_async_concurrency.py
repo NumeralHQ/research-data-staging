@@ -72,7 +72,6 @@ async def test_concurrent_processing_timing():
         start_time = time.time()
         results = await process_sheets_concurrently(
             file_list, 
-            mock_sheets_client, 
             mock_row_mapper,
             max_concurrency=3
         )
