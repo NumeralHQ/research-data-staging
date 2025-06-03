@@ -43,19 +43,19 @@ def test_record_csv_output():
     
     csv_row = record.to_csv_row()
     expected = [
-        "US0100000000",  # geocode
-        "",              # tax_auth_id
-        "ZZZZ",          # group
-        "1.1.1.1.0.0.0.0", # item
-        "99",            # customer
-        "99",            # provider
-        "01",            # transaction
-        "1",             # taxable
-        "01",            # tax_type
-        "01",            # tax_cat
-        "",              # effective
-        "01",            # per_taxable_type
-        "1.000000"       # percent_taxable
+        '"US0100000000"',  # geocode
+        '""',              # tax_auth_id
+        '"ZZZZ"',          # group
+        '"1.1.1.1.0.0.0.0"', # item
+        '"99"',            # customer
+        '"99"',            # provider
+        '"01"',            # transaction
+        '"1"',             # taxable
+        '"01"',            # tax_type
+        '"01"',            # tax_cat
+        '"1999-01-01"',    # effective (from config default)
+        '"01"',            # per_taxable_type
+        '"1.000000"'       # percent_taxable
     ]
     
     assert csv_row == expected
@@ -65,19 +65,19 @@ def test_csv_headers():
     """Test CSV headers are in correct order."""
     headers = Record.csv_headers()
     expected = [
-        "geocode",
-        "tax_auth_id", 
-        "group",
-        "item",
-        "customer",
-        "provider",
-        "transaction",
-        "taxable",
-        "tax_type",
-        "tax_cat",
-        "effective",
-        "per_taxable_type",
-        "percent_taxable"
+        '"geocode"',
+        '"tax_auth_id"', 
+        '"group"',
+        '"item"',
+        '"customer"',
+        '"provider"',
+        '"transaction"',
+        '"taxable"',
+        '"tax_type"',
+        '"tax_cat"',
+        '"effective"',
+        '"per_taxable_type"',
+        '"percent_taxable"'
     ]
     
     assert headers == expected

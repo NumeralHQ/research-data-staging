@@ -46,6 +46,7 @@ def test_imports():
     from src.lambda_handler import lambda_handler
     
     print("\n🎉 All imports successful!")
+    return True
 
 def test_basic_functionality():
     """Test basic functionality without external dependencies."""
@@ -74,7 +75,7 @@ def test_basic_functionality():
     
     # Test CSV output
     csv_row = record.to_csv_row()
-    print(f"✓ CSV output: {csv_row[:50]}...")
+    print(f"✓ CSV output: {csv_row[:3]}...")  # Show first 3 quoted fields
     
     print("✓ Basic functionality tests passed!")
     
@@ -82,6 +83,11 @@ def test_basic_functionality():
     assert record.geocode == "US0600000000"
     assert record.customer == "99"
     assert len(csv_row) > 0
+    # Check that values are properly quoted
+    assert csv_row[0] == '"US0600000000"'  # geocode should be quoted
+    assert csv_row[4] == '"99"'  # customer should be quoted
+    
+    return True
 
 if __name__ == "__main__":
     print("Research Data Aggregation Service - Test Suite")

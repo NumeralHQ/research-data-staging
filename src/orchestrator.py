@@ -43,14 +43,15 @@ class ResearchDataOrchestrator:
     def _create_csv_content(self, records: List[Record]) -> str:
         """Create CSV content from records."""
         output = io.StringIO()
-        writer = csv.writer(output)
         
-        # Write header row
-        writer.writerow(Record.csv_headers())
+        # Write header row manually since we're using custom quoting
+        headers = Record.csv_headers()
+        output.write(','.join(headers) + '\n')
         
-        # Write data rows
+        # Write data rows manually
         for record in records:
-            writer.writerow(record.to_csv_row())
+            csv_row = record.to_csv_row()
+            output.write(','.join(csv_row) + '\n')
         
         content = output.getvalue()
         output.close()

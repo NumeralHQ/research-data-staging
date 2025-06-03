@@ -32,6 +32,9 @@ class Config:
         self.max_concurrent_requests = int(os.environ.get('MAX_CONCURRENT_REQUESTS', '5'))
         self.rate_limit_delay = float(os.environ.get('RATE_LIMIT_DELAY', '0.1'))
         
+        # CSV output settings
+        self.effective_date = os.environ.get('EFFECTIVE_DATE', '1999-01-01')
+        
         # Column name mappings
         self.admin_column = os.environ.get('ADMIN_COLUMN', 'Admin')
         self.col_current_id = os.environ.get('COL_CURRENT_ID', 'Current ID')

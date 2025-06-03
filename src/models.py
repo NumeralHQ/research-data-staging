@@ -59,6 +59,9 @@ class Record:
                  per_taxable_type: str = PerTaxableType.DEFAULT.value,
                  percent_taxable: Optional[Decimal] = None):
         
+        # Import config here to avoid circular imports
+        from .config import config
+        
         # Basic validation
         if len(geocode) != 12:
             raise ValueError(f"geocode must be 12 characters, got {len(geocode)}")
@@ -87,45 +90,55 @@ class Record:
         self.taxable = taxable
         self.tax_type = tax_type
         self.tax_cat = tax_cat
-        self.effective = effective
+        # Use effective date from config if not provided
+        self.effective = effective or config.effective_date
         self.per_taxable_type = per_taxable_type
         self.percent_taxable = round(percent_taxable, 6) if percent_taxable is not None else None
     
     def to_csv_row(self) -> List[str]:
-        """Convert record to CSV row with proper formatting."""
+        """Convert record to CSV row with proper formatting - all values wrapped in quotes."""
+        def quote_and_escape(value):
+            """Quote a value and escape any internal quotes."""
+            if value is None:
+                return '""'
+            str_value = str(value)
+            # Escape any existing quotes by doubling them
+            escaped_value = str_value.replace('"', '""')
+            return f'"{escaped_value}"'
+        
         return [
-            self.geocode,
-            self.tax_auth_id or "",
-            self.group,
-            self.item,
-            self.customer,
-            self.provider,
-            self.transaction,
-            str(self.taxable) if self.taxable is not None else "",
-            self.tax_type,
-            self.tax_cat,
-            self.effective or "",
-            self.per_taxable_type,
-            str(self.percent_taxable) if self.percent_taxable is not None else ""
+            quote_and_escape(self.geocode),
+            quote_and_escape(self.tax_auth_id),
+            quote_and_escape(self.group),
+            quote_and_escape(self.item),
+            quote_and_escape(self.customer),
+            quote_and_escape(self.provider),
+            quote_and_escape(self.transaction),
+            quote_and_escape(self.taxable),
+            quote_and_escape(self.tax_type),
+            quote_and_escape(self.tax_cat),
+            quote_and_escape(self.effective),
+            quote_and_escape(self.per_taxable_type),
+            quote_and_escape(self.percent_taxable)
         ]
     
     @classmethod
     def csv_headers(cls) -> List[str]:
-        """Return CSV headers in the correct order."""
+        """Return CSV headers in the correct order - all wrapped in quotes."""
         return [
-            "geocode",
-            "tax_auth_id", 
-            "group",
-            "item",
-            "customer",
-            "provider",
-            "transaction",
-            "taxable",
-            "tax_type",
-            "tax_cat",
-            "effective",
-            "per_taxable_type",
-            "percent_taxable"
+            '"geocode"',
+            '"tax_auth_id"', 
+            '"group"',
+            '"item"',
+            '"customer"',
+            '"provider"',
+            '"transaction"',
+            '"taxable"',
+            '"tax_type"',
+            '"tax_cat"',
+            '"effective"',
+            '"per_taxable_type"',
+            '"percent_taxable"'
         ]
 
 
