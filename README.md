@@ -13,7 +13,9 @@ Combine several state-specific Google Sheets into **one canonical CSV** and push
 - **Google Workspace APIs** – `drive`, `sheets` v4 via **Workload Identity Federation** (no service account keys required).
 - **Amazon S3** – destination bucket `research-aggregation` with organized folder structure:
   • `output-YYYYMMDD-HHMM/` – timestamped folders for each run (Pacific Time)
-    - `matrix_append.csv` – final aggregated data
+    - `matrix_append.csv` – final aggregated matrix data
+    - `product_item_append.csv` – generated product item data with deduplication
+    - `product_group_append.csv` – static product group data
     - `errors.json` – processing errors (if any)
   • `mapping/*` – lookup tables (`geo_state.csv`, `tax_cat.csv`)
 - **AWS IAM / KMS** – least-privilege roles, S3 encryption, Workload Identity Federation for secure Google API access.
@@ -45,8 +47,10 @@ research-data-staging/
 │   ├── models.py          # Simplified data models / lookups / enums (no Pydantic)
 │   ├── mapper.py          # row → CSV record conversion with percentage parsing
 │   ├── worker.py          # async processing for one sheet with concurrency control
-│   ├── orchestrator.py    # fan-out/fan-in logic with Pacific Time
-│   └── lambda_handler.py  # AWS entry-point with Powertools
+│   ├── orchestrator.py    # fan-out/fan-in logic with Pacific Time + static file upload
+│   ├── lambda_handler.py  # AWS entry-point with Powertools
+│   └── data/              # Static data files
+│       └── product_group_append.csv  # Static product group data
 ├── mapping/               # Lookup tables
 │   ├── geo_state.csv      # State → geocode (✅ implemented)
 │   └── tax_cat.csv        # tax_cat text → 2-char code (✅ implemented)
@@ -161,13 +165,18 @@ The generated CSV will always emit columns in **this exact order**:
    b. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
    c. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
 6. `orchestrator` gathers all `Record`s, streams them into a `csv.writer` **in the fixed column order**.
-7. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload `matrix_append.csv` (timestamp in America/Los_Angeles).
-8. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
+7. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
+8. **Deduplication**: Remove duplicate product items by Item ID, keeping first occurrence.
+9. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_append.csv` and `product_item_append.csv` (timestamp in America/Los_Angeles).
+10. Upload static data files from `src/data/` directory (e.g., `product_group_append.csv`) to the same output folder.
+11. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
 
 ## 7. Data Mapping Rules (✅ IMPLEMENTED)
 See `mapper.py` for canonical reference.  Key features:
+
+### **Matrix CSV Output (matrix_append.csv)**
 
 **CSV Output Formatting**: All values in the output CSV are wrapped in quotes for consistency
 - All field values: `"US1800000000"`, `"BB"`, `"1.000000"`, etc.
@@ -193,6 +202,32 @@ See `mapper.py` for canonical reference.  Key features:
 - Each "Tag Level" row generates two CSV records:
 - Business: `customer="BB"`, uses "Business Use", "Business tax_cat", "Business percent_taxable" columns
 - Personal: `customer="99"`, uses "Personal Use", "Personal tax_cat", "Personal percent_taxable" columns
+
+### **Product Item CSV Output (product_item_append.csv)**
+
+**✅ NEW FEATURE**: Generates unique product item data from Google Sheets with zero additional API calls.
+
+**Data Extraction Rules:**
+- **Row Filter**: Only process rows where Admin column (K) = "Tag Level" (same as matrix processing)
+- **Item ID**: Extract from Current ID column (Column B)
+- **Description**: Direct concatenation of columns C:J (L1, L2, L3, L4, L5, L6, L7, L8 headers) with no separators
+- **Group**: Always set to "ZZZZ" for all product items
+
+**Processing Logic:**
+```csv
+"group","item","description"
+"ZZZZ","ITEM001","Product Name From Columns C-J"
+"ZZZZ","ITEM002","Another Product Description"
+```
+
+**Deduplication**: Remove duplicate items by Item ID, keeping first occurrence
+- Example: If "ITEM001" appears in 3 different sheets, only first occurrence is kept
+- Performance: O(1) deduplication using Python sets
+
+**Skip Conditions**: Rows are skipped if:
+- Admin column ≠ "Tag Level"
+- Current ID (Column B) is empty or blank
+- All description columns (C:J) are empty or blank
 
 ---
 
@@ -427,9 +462,12 @@ The service is currently running successfully in production:
 1. Processes 51 Google Sheets files from Drive folder **concurrently**
 2. Completes processing in **20-30 seconds** (vs 157 seconds sequential)
 3. Generates 11,730 CSV records (2 per "Tag Level" row: Business + Personal)
-4. Uploads final CSV to S3: `output-YYYYMMDD-HHMM/matrix_append.csv`
-5. All values properly quoted: `"US1800000000"`, `"BB"`, `"1.000000"`, etc.
-6. Effective date configurable via `EFFECTIVE_DATE` environment variable
+4. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
+5. Uploads matrix CSV to S3: `output-YYYYMMDD-HHMM/matrix_append.csv`
+6. Uploads product item CSV to S3: `output-YYYYMMDD-HHMM/product_item_append.csv` (deduplicated by item ID)
+7. Uploads static data files to S3: `output-YYYYMMDD-HHMM/product_group_append.csv`
+8. All values properly quoted: `"US1800000000"`, `"BB"`, `"1.000000"`, etc.
+9. Effective date configurable via `EFFECTIVE_DATE` environment variable
 
 ### 🚀 **Performance Benchmarks**
 - **Individual Sheet Processing**: 1-2 seconds (down from 3-4 seconds)

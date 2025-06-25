@@ -49,6 +49,25 @@ def install_dependencies():
         "Installing dependencies"
     )
 
+def validate_data_files():
+    """Validate that required data files exist."""
+    print("🔍 Validating data files...")
+    data_dir = Path("src/data")
+    
+    if not data_dir.exists():
+        print(f"❌ Data directory not found: {data_dir}")
+        sys.exit(1)
+    
+    # Check for CSV files in data directory
+    csv_files = list(data_dir.glob("*.csv"))
+    if not csv_files:
+        print(f"⚠️  No CSV files found in {data_dir}")
+        print("   The static file upload feature will not work without data files")
+    else:
+        print(f"✅ Found {len(csv_files)} CSV file(s) in data directory:")
+        for csv_file in csv_files:
+            print(f"   - {csv_file.name}")
+
 def copy_source_code():
     """Copy source code to package directory."""
     print("📁 Copying source code...")
@@ -63,6 +82,14 @@ def copy_source_code():
     if src_dir.exists():
         shutil.copytree(src_dir, dest_dir)
         print("✅ Source code copied")
+        
+        # Validate that data directory was copied
+        data_dest = dest_dir / "data"
+        if data_dest.exists():
+            csv_files = list(data_dest.glob("*.csv"))
+            print(f"✅ Data directory copied with {len(csv_files)} CSV file(s)")
+        else:
+            print("⚠️  Data directory not found in copied source")
     else:
         print("❌ Source directory not found")
         sys.exit(1)
@@ -143,6 +170,9 @@ def main():
     
     print(f"🚀 Starting {'full' if build_mode == 'full' else 'source-only'} build process")
     print("=" * 60)
+    
+    # Always validate data files before building
+    validate_data_files()
     
     if build_mode == "full":
         # Full build: clean everything and rebuild

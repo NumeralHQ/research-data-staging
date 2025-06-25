@@ -10,7 +10,7 @@ from .config import Config
 from .config import config
 from .sheets_client import SheetsClient
 from .mapper import RowMapper
-from .models import Record, ProcessingError, LookupTables
+from .models import Record, ProductItem, ProcessingError, LookupTables
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,69 @@ class SheetWorker:
         # Create a unique worker ID for logging
         self.worker_id = str(uuid.uuid4())[:8]
     
+    def _extract_product_items_from_rows(self, sheet_data: List[List[Any]], header_mapping: Dict[str, int], file_name: str) -> List[ProductItem]:
+        """Extract product items from sheet rows that match the admin filter."""
+        product_items = []
+        
+        # Get column indices
+        admin_col_idx = header_mapping.get('admin')
+        current_id_col_idx = header_mapping.get('current_id')
+        
+        if admin_col_idx is None:
+            logger.warning(f"{file_name}: Admin column not found in headers")
+            return product_items
+            
+        if current_id_col_idx is None:
+            logger.warning(f"{file_name}: Current ID column not found in headers")
+            return product_items
+        
+        logger.info(f"{file_name}: Extracting product items from rows (Admin col: {admin_col_idx}, Current ID col: {current_id_col_idx})")
+        
+        for row_idx, row_data in enumerate(sheet_data):
+            try:
+                # Check admin filter first
+                admin_value = ""
+                if len(row_data) > admin_col_idx and row_data[admin_col_idx]:
+                    admin_value = str(row_data[admin_col_idx]).strip()
+                
+                if admin_value != config.admin_filter_value:
+                    continue  # Skip rows that don't match the admin filter
+                
+                # Extract Current ID (Column B, index 1, but using header mapping)
+                item_id = ""
+                if len(row_data) > current_id_col_idx and row_data[current_id_col_idx]:
+                    item_id = str(row_data[current_id_col_idx]).strip()
+                
+                if not item_id:
+                    continue  # Skip rows with empty Current ID
+                
+                # Extract description from columns C:J (indices 2-9)
+                # These correspond to L1, L2, L3, L4, L5, L6, L7, L8 headers
+                description_parts = []
+                for col_idx in range(2, 10):  # Columns C through J (indices 2-9)
+                    if len(row_data) > col_idx and row_data[col_idx]:
+                        part = str(row_data[col_idx]).strip()
+                        if part:
+                            description_parts.append(part)
+                
+                # Direct concatenation with no separators
+                description = "".join(description_parts).strip()
+                
+                if not description:
+                    continue  # Skip rows with empty description
+                
+                # Create ProductItem
+                product_item = ProductItem(item_id, description)
+                if product_item.is_valid():
+                    product_items.append(product_item)
+                    
+            except Exception as e:
+                logger.warning(f"{file_name}: Error processing row {row_idx + config.header_row + 1} for product items: {e}")
+                continue
+        
+        logger.info(f"{file_name}: Extracted {len(product_items)} product items")
+        return product_items
+    
     async def process_sheet(self, file_info: Dict[str, Any], header_mapping: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
         """
         Process a single Google Sheets file.
@@ -35,7 +98,7 @@ class SheetWorker:
             header_mapping: Optional pre-computed header mapping to reuse
             
         Returns:
-            Dictionary with processing results
+            Dictionary with processing results including both matrix records and product items
         """
         file_id = file_info['id']
         file_name = file_info['name']
@@ -61,6 +124,7 @@ class SheetWorker:
                     'success': False,
                     'error': error_msg,
                     'records': [],
+                    'product_items': [],
                     'rows_processed': 0
                 }
             
@@ -79,10 +143,11 @@ class SheetWorker:
                     'file_name': file_name,
                     'success': True,
                     'records': [],
+                    'product_items': [],
                     'rows_processed': 0
                 }
             
-            # Process rows using the mapper's sheet-level processing
+            # Process rows for matrix records using the existing mapper
             records, geocode_error = self.row_mapper.process_sheet_rows(
                 sheet_data,
                 header_mapping,
@@ -98,8 +163,12 @@ class SheetWorker:
                     'success': False,
                     'error': geocode_error,
                     'records': [],
+                    'product_items': [],
                     'rows_processed': 0
                 }
+            
+            # Extract product items from the same sheet data
+            product_items = self._extract_product_items_from_rows(sheet_data, header_mapping, file_name)
             
             # Count rows that matched the admin filter
             admin_col_idx = header_mapping.get('admin')
@@ -111,7 +180,7 @@ class SheetWorker:
                         if admin_value == config.admin_filter_value:
                             rows_processed += 1
 
-            logger.info(f"{file_name}: Processed {rows_processed} rows, generated {len(records)} records")
+            logger.info(f"{file_name}: Processed {rows_processed} rows, generated {len(records)} matrix records, {len(product_items)} product items")
             
             elapsed_time = time.time() - start_time
             logger.info(f"✅ Worker[{self.worker_id}] Completed: {file_name} in {elapsed_time:.2f}s")
@@ -121,6 +190,7 @@ class SheetWorker:
                 'file_name': file_name,
                 'success': True,
                 'records': records,
+                'product_items': product_items,
                 'rows_processed': rows_processed
             }
             
@@ -134,6 +204,7 @@ class SheetWorker:
                 'success': False,
                 'error': error_msg,
                 'records': [],
+                'product_items': [],
                 'rows_processed': 0
             }
 
@@ -152,7 +223,7 @@ async def process_sheets_concurrently(
         max_concurrency: Maximum concurrent operations (defaults to config value)
         
     Returns:
-        List of processing results
+        List of processing results including both matrix records and product items
     """
     if not file_list:
         logger.info("No files to process")
@@ -210,6 +281,7 @@ async def process_sheets_concurrently(
                 'success': False,
                 'error': f"Exception: {str(result)}",
                 'records': [],
+                'product_items': [],
                 'rows_processed': 0
             })
         else:
@@ -218,9 +290,11 @@ async def process_sheets_concurrently(
     # Log summary
     successful = sum(1 for r in processed_results if r['success'])
     total_records = sum(len(r['records']) for r in processed_results)
+    total_product_items = sum(len(r.get('product_items', [])) for r in processed_results)
     total_rows = sum(r['rows_processed'] for r in processed_results)
     
     logger.info(f"Processing complete: {successful}/{len(file_list)} files successful, "
-                f"{total_rows} rows processed, {total_records} records generated")
+                f"{total_rows} rows processed, {total_records} matrix records generated, "
+                f"{total_product_items} product items extracted")
     
     return processed_results 
