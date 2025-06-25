@@ -13,7 +13,7 @@ Combine several state-specific Google Sheets into **one canonical CSV** and push
 - **Google Workspace APIs** – `drive`, `sheets` v4 via **Workload Identity Federation** (no service account keys required).
 - **Amazon S3** – destination bucket `research-aggregation` with organized folder structure:
   • `output-YYYYMMDD-HHMM/` – timestamped folders for each run (Pacific Time)
-    - `results.csv` – final aggregated data
+    - `matrix_append.csv` – final aggregated data
     - `errors.json` – processing errors (if any)
   • `mapping/*` – lookup tables (`geo_state.csv`, `tax_cat.csv`)
 - **AWS IAM / KMS** – least-privilege roles, S3 encryption, Workload Identity Federation for secure Google API access.
@@ -161,7 +161,7 @@ The generated CSV will always emit columns in **this exact order**:
    b. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
    c. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
 6. `orchestrator` gathers all `Record`s, streams them into a `csv.writer` **in the fixed column order**.
-7. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload `results.csv` (timestamp in America/Los_Angeles).
+7. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload `matrix_append.csv` (timestamp in America/Los_Angeles).
 8. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
@@ -427,7 +427,7 @@ The service is currently running successfully in production:
 1. Processes 51 Google Sheets files from Drive folder **concurrently**
 2. Completes processing in **20-30 seconds** (vs 157 seconds sequential)
 3. Generates 11,730 CSV records (2 per "Tag Level" row: Business + Personal)
-4. Uploads final CSV to S3: `output-YYYYMMDD-HHMM/results.csv`
+4. Uploads final CSV to S3: `output-YYYYMMDD-HHMM/matrix_append.csv`
 5. All values properly quoted: `"US1800000000"`, `"BB"`, `"1.000000"`, etc.
 6. Effective date configurable via `EFFECTIVE_DATE` environment variable
 

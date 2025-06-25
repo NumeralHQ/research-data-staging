@@ -61,7 +61,7 @@ class ResearchDataOrchestrator:
     
     async def _upload_csv_to_s3(self, csv_content: str, output_folder: str) -> str:
         """Upload CSV content to S3 and return the key."""
-        key = f"{output_folder}/results.csv"
+        key = f"{output_folder}/matrix_append.csv"
         
         try:
             self.s3_client.put_object(

@@ -39,7 +39,7 @@ def test_folder_structure_example():
     folder_name = orchestrator._generate_output_folder()
     
     # Example file paths
-    csv_path = f"{folder_name}/results.csv"
+    csv_path = f"{folder_name}/matrix_append.csv"
     errors_path = f"{folder_name}/errors.json"
     
     print(f"📁 Output folder: {folder_name}")
@@ -47,7 +47,7 @@ def test_folder_structure_example():
     print(f"❌ Errors file path: {errors_path}")
     
     # Verify paths are constructed correctly
-    assert csv_path.endswith('/results.csv'), "CSV path should end with '/results.csv'"
+    assert csv_path.endswith('/matrix_append.csv'), "CSV path should end with '/matrix_append.csv'"
     assert errors_path.endswith('/errors.json'), "Errors path should end with '/errors.json'"
     assert csv_path.startswith(folder_name), "CSV path should start with folder name"
     assert errors_path.startswith(folder_name), "Errors path should start with folder name"
