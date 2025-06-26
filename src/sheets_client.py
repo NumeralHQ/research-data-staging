@@ -82,12 +82,13 @@ class SheetsClient:
             current_time = time.time()
             time_since_last = current_time - cls._last_request_time
             
-            # Use a smaller interval for better concurrency
-            min_interval = 0.05  # 50ms between requests globally
+            # Google Sheets API rate limit: 60 requests per minute = 1 request per second
+            # Add a small buffer to be safe: 1.1 seconds between requests
+            min_interval = 1.1  # 1.1 seconds between requests globally
             
             if time_since_last < min_interval:
                 sleep_time = min_interval - time_since_last
-                logger.debug(f"Global rate limiting, sleeping {sleep_time:.3f}s")
+                logger.info(f"Global rate limiting: sleeping {sleep_time:.2f}s to respect API limits")
                 await asyncio.sleep(sleep_time)
             
             cls._last_request_time = time.time()

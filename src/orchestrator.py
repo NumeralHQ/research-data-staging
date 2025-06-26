@@ -261,13 +261,20 @@ class ResearchDataOrchestrator:
             all_records = []
             all_product_items = []
             failed_results = []
+            all_processing_errors = []
             
             for result in results:
                 if result['success']:
                     all_records.extend(result['records'])
                     all_product_items.extend(result.get('product_items', []))
+                    # Collect processing errors from successful files
+                    processing_errors = result.get('processing_errors', [])
+                    all_processing_errors.extend(processing_errors)
                 else:
                     failed_results.append(result)
+                    # Also collect processing errors from failed files if they have any
+                    processing_errors = result.get('processing_errors', [])
+                    all_processing_errors.extend(processing_errors)
             
             # Step 4: Log errors for CloudWatch alerting
             if failed_results:
@@ -298,8 +305,23 @@ class ResearchDataOrchestrator:
             else:
                 logger.warning("No product items generated, skipping product item CSV upload")
             
-            # Step 7: Upload error log if there are errors
-            error_key = await self._upload_errors_to_s3(failed_results, output_folder)
+            # Step 7: Upload error log if there are any errors
+            # Combine file-level errors and processing errors  
+            all_errors = []
+            
+            # Add file-level processing errors
+            for failed_result in failed_results:
+                all_errors.append({
+                    "error_type": "FileProcessingError",
+                    "file_name": failed_result['file_name'],
+                    "error_message": failed_result.get('error', 'Unknown error')
+                })
+            
+            # Add data quality errors
+            for processing_error in all_processing_errors:
+                all_errors.append(processing_error.to_dict())
+            
+            error_key = await self._upload_errors_to_s3(all_errors, output_folder)
             
             # Step 8: Upload static data files
             logger.info("Uploading static data files")
@@ -313,7 +335,7 @@ class ResearchDataOrchestrator:
                 "records_generated": len(all_records),
                 "product_items_generated": len(all_product_items),
                 "unique_product_items": len(self._deduplicate_product_items(all_product_items)) if all_product_items else 0,
-                "errors": len(failed_results),
+                "errors": len(failed_results) + len(all_processing_errors),
                 "csv_key": csv_key,
                 "product_item_key": product_item_key,
                 "static_file_keys": static_file_keys,

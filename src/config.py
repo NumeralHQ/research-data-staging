@@ -29,8 +29,12 @@ class Config:
         self.sheet_name = os.environ.get('SHEET_NAME', 'Research')
         self.header_row = int(os.environ.get('HEADER_ROW', '4'))
         self.admin_filter_value = os.environ.get('ADMIN_FILTER_VALUE', 'Tag Level')
-        self.max_concurrent_requests = int(os.environ.get('MAX_CONCURRENT_REQUESTS', '5'))
-        self.rate_limit_delay = float(os.environ.get('RATE_LIMIT_DELAY', '0.1'))
+        
+        # Conservative defaults to respect Google Sheets API rate limits (60 requests/minute)
+        # Each file makes 2 API calls (header + data), so max_concurrent=2 means 4 concurrent calls
+        # With 1.1s global rate limiting, this should stay well under the 60/min limit
+        self.max_concurrent_requests = int(os.environ.get('MAX_CONCURRENT_REQUESTS', '4'))  # Reduced from 5 to 4 for API rate limits
+        self.rate_limit_delay = float(os.environ.get('RATE_LIMIT_DELAY', '0.2'))  # Increased from 0.1 to 0.2 seconds
         
         # CSV output settings
         self.effective_date = os.environ.get('EFFECTIVE_DATE', '1999-01-01')

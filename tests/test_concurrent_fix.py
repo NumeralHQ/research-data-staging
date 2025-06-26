@@ -27,7 +27,7 @@ async def test_thread_pool_enables_true_concurrency():
     
     # Create mock row mapper
     mock_row_mapper = Mock(spec=RowMapper)
-    mock_row_mapper.process_sheet_rows.return_value = ([], None)  # No records, no error
+    mock_row_mapper.process_sheet_rows.return_value = ([], None, [])  # No records, no error, no processing errors
     
     # Track when each "API call" starts and ends
     api_call_times = []

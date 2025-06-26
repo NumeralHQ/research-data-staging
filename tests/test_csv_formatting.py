@@ -25,11 +25,18 @@ def test_csv_formatting():
     # Test with custom effective date
     record = Record(
         geocode="US1800000000",  # Illinois
+        tax_auth_id="",
+        group="ZZZZ",
         item="1.2.3.4.5.6.7.8",
         customer=CustomerType.BUSINESS.value,
-        tax_cat="05",
+        provider="99",
+        transaction="01",
         taxable=TaxableValue.TAXABLE.value,
-        percent_taxable=Decimal("0.875000")
+        tax_type="01",
+        tax_cat="05",
+        effective="2024-01-01",
+        per_taxable_type="01",
+        percent_taxable="0.875000"
     )
     
     print(f"✓ Created record with geocode: {record.geocode}")
@@ -86,8 +93,18 @@ def test_empty_values():
     # Create record with minimal required fields
     record = Record(
         geocode="US0600000000",
+        tax_auth_id="",
+        group="ZZZZ",
+        item="",
         customer=CustomerType.PERSONAL.value,
-        tax_cat="01"
+        provider="99",
+        transaction="01",
+        taxable=1,
+        tax_type="01",
+        tax_cat="01",
+        effective="1999-01-01",
+        per_taxable_type="01",
+        percent_taxable="1.000000"
     )
     
     csv_row = record.to_csv_row()

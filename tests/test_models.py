@@ -34,11 +34,18 @@ def test_record_csv_output():
     """Test CSV row generation."""
     record = Record(
         geocode="US0100000000",
+        tax_auth_id="",
+        group="ZZZZ",
         item="1.1.1.1.0.0.0.0",
         customer=CustomerType.PERSONAL.value,
-        tax_cat="01",
+        provider="99",
+        transaction="01",
         taxable=1,
-        percent_taxable=Decimal("1.000000")
+        tax_type="01",
+        tax_cat="01",
+        effective="1999-01-01",
+        per_taxable_type="01",
+        percent_taxable="1.000000"
     )
     
     csv_row = record.to_csv_row()

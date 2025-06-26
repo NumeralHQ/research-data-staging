@@ -365,30 +365,40 @@ pytest tests/test_concurrent_fix.py::test_thread_pool_enables_true_concurrency -
 
 ## 12. Deployment Commands (✅ ENHANCED)
 
-**Enhanced Build Script with Multiple Modes:**
+**Enhanced Build & Deploy Script with Multiple Modes:**
 
 ```bash
-# Interactive mode (shows menu)
+# Interactive mode (enhanced menu with deployment options)
 python build.py
 
-# Quick source update (for code changes during development)
-python build.py --src
+# Build options
+python build.py --full             # Full build only
+python build.py --src              # Source-only build
 
-# Full rebuild (for dependency changes or first-time setup)
-python build.py --full
+# Deployment options
+python build.py --deploy           # Build + Deploy to AWS Lambda
+python build.py --deploy-only      # Deploy existing ZIP to AWS Lambda
+python build.py --full-deploy      # Full build + Deploy
+
+# Lambda operations
+python build.py --invoke           # Run Lambda function remotely
+python build.py --invoke --payload '{"test": true}'  # With custom payload
+python build.py --info             # Show Lambda function information
+python build.py --test-aws         # Test AWS credentials
 
 # Show help and usage options
 python build.py --help
 ```
 
-**Build Modes Explained:**
+**Enhanced Build & Deploy Modes:**
 
+### **Build-Only Modes:**
 1. **🔄 Full Build** (`--full`):
    - Cleans lambda-package directory completely
    - Downloads and installs all dependencies (~60+ seconds)
    - Copies source code and mapping files
    - Creates deployment ZIP file
-   - Use for: First-time setup, dependency changes, or when unsure
+   - Use for: First-time setup, dependency changes
 
 2. **⚡ Source-Only Build** (`--src`):
    - Keeps existing dependencies (much faster ~10-15 seconds)
@@ -396,21 +406,81 @@ python build.py --help
    - Creates deployment ZIP file
    - Use for: Code changes during development
 
-3. **🚀 Interactive Mode** (default):
-   - Shows user-friendly menu with options
-   - Guides you through the build process
-   - Use for: When you want to choose the build type
+### **Deployment Modes:**
+3. **📦 Build + Deploy** (`--deploy`):
+   - Full build process + automatic deployment to AWS Lambda
+   - Handles MFA authentication if required
+   - Preserves environment variables and function configuration
+   - Use for: Complete build and deployment in one step
 
-**Recommended Development Workflow:**
+4. **🚀 Deploy Only** (`--deploy-only`):
+   - Deploys existing ZIP file without rebuilding
+   - Fast deployment for already built packages
+   - Use for: Quick deployment of current build
+
+### **Lambda Operations:**
+5. **▶️ Invoke Function** (`--invoke`):
+   - Runs the Lambda function remotely for testing
+   - Shows execution results and logs
+   - Supports custom payloads
+   - Use for: Testing deployed function
+
+6. **📊 Function Info** (`--info`):
+   - Shows current Lambda function configuration
+   - Displays memory, timeout, runtime, code size
+   - Shows environment variables (non-sensitive)
+   - Use for: Checking current deployment status
+
+### **🚀 Interactive Mode** (default):
+   - Enhanced menu with all build and deployment options
+   - MFA-enabled AWS operations
+   - Guided deployment process
+   - Use for: Full-featured interactive experience
+
+**Recommended Development Workflows:**
+
+### **🔧 Development Cycle:**
 ```bash
-# First time or when requirements.txt changes
+# First time setup
 python build.py --full
 
 # During development (code changes)
 python build.py --src
 
-# When unsure which to use
+# Test AWS credentials
+python build.py --test-aws
+
+# Build and deploy
+python build.py --deploy
+
+# Test the deployed function
+python build.py --invoke
+
+# Check function status
+python build.py --info
+```
+
+### **🚀 Quick Deploy Workflow:**
+```bash
+# One-command build and deploy
+python build.py --deploy
+
+# Quick redeploy after changes
+python build.py --src
+python build.py --deploy-only
+
+# Test the deployment
+python build.py --invoke
+```
+
+### **🔄 Continuous Development:**
+```bash
+# Interactive mode for guided experience
 python build.py
+> Choose: "3. Build + Deploy to AWS Lambda"
+> MFA authentication (handled automatically)
+> Build and deploy
+> Test with: "5. Run Lambda function"
 ```
 
 **Manual invoke:**

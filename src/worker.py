@@ -33,6 +33,8 @@ class SheetWorker:
         # Get column indices
         admin_col_idx = header_mapping.get('admin')
         current_id_col_idx = header_mapping.get('current_id')
+        business_use_col_idx = header_mapping.get('business_use')
+        personal_use_col_idx = header_mapping.get('personal_use')
         
         if admin_col_idx is None:
             logger.warning(f"{file_name}: Admin column not found in headers")
@@ -41,6 +43,9 @@ class SheetWorker:
         if current_id_col_idx is None:
             logger.warning(f"{file_name}: Current ID column not found in headers")
             return product_items
+        
+        # Define uncertain taxable values (same as in mapper.py)
+        uncertain_taxable_values = {'DRILL DOWN', 'TO RESEARCH'}
         
         logger.info(f"{file_name}: Extracting product items from rows (Admin col: {admin_col_idx}, Current ID col: {current_id_col_idx})")
         
@@ -61,6 +66,25 @@ class SheetWorker:
                 
                 if not item_id:
                     continue  # Skip rows with empty Current ID
+                
+                # Check taxable status for both business and personal use
+                # Skip rows with uncertain taxable values to maintain consistency with matrix records
+                should_skip = False
+                
+                if business_use_col_idx is not None and len(row_data) > business_use_col_idx and row_data[business_use_col_idx]:
+                    business_use = str(row_data[business_use_col_idx]).strip().upper()
+                    if business_use in uncertain_taxable_values:
+                        logger.debug(f"{file_name}: Skipping product item for {item_id} - uncertain business taxable status '{row_data[business_use_col_idx]}' (skipped for tax safety)")
+                        should_skip = True
+                
+                if personal_use_col_idx is not None and len(row_data) > personal_use_col_idx and row_data[personal_use_col_idx]:
+                    personal_use = str(row_data[personal_use_col_idx]).strip().upper()
+                    if personal_use in uncertain_taxable_values:
+                        logger.debug(f"{file_name}: Skipping product item for {item_id} - uncertain personal taxable status '{row_data[personal_use_col_idx]}' (skipped for tax safety)")
+                        should_skip = True
+                
+                if should_skip:
+                    continue  # Skip this row entirely due to uncertain taxable status
                 
                 # Extract description from columns C:J (indices 2-9)
                 # These correspond to L1, L2, L3, L4, L5, L6, L7, L8 headers
@@ -125,7 +149,8 @@ class SheetWorker:
                     'error': error_msg,
                     'records': [],
                     'product_items': [],
-                    'rows_processed': 0
+                    'rows_processed': 0,
+                    'processing_errors': []
                 }
             
             # Get sheet data starting after header row
@@ -144,11 +169,12 @@ class SheetWorker:
                     'success': True,
                     'records': [],
                     'product_items': [],
-                    'rows_processed': 0
+                    'rows_processed': 0,
+                    'processing_errors': []
                 }
             
             # Process rows for matrix records using the existing mapper
-            records, geocode_error = self.row_mapper.process_sheet_rows(
+            records, geocode_error, processing_errors = self.row_mapper.process_sheet_rows(
                 sheet_data,
                 header_mapping,
                 file_name,
@@ -164,7 +190,8 @@ class SheetWorker:
                     'error': geocode_error,
                     'records': [],
                     'product_items': [],
-                    'rows_processed': 0
+                    'rows_processed': 0,
+                    'processing_errors': processing_errors  # Include any processing errors collected before the geocode error
                 }
             
             # Extract product items from the same sheet data
@@ -191,7 +218,8 @@ class SheetWorker:
                 'success': True,
                 'records': records,
                 'product_items': product_items,
-                'rows_processed': rows_processed
+                'rows_processed': rows_processed,
+                'processing_errors': processing_errors
             }
             
         except Exception as e:
@@ -205,7 +233,8 @@ class SheetWorker:
                 'error': error_msg,
                 'records': [],
                 'product_items': [],
-                'rows_processed': 0
+                'rows_processed': 0,
+                'processing_errors': []
             }
 
 
@@ -282,7 +311,8 @@ async def process_sheets_concurrently(
                 'error': f"Exception: {str(result)}",
                 'records': [],
                 'product_items': [],
-                'rows_processed': 0
+                'rows_processed': 0,
+                'processing_errors': []
             })
         else:
             processed_results.append(result)

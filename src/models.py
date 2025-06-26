@@ -5,7 +5,7 @@ import io
 import logging
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Optional, Union, Any, Set
+from typing import Dict, List, Optional, Union, Any, Set, Tuple
 
 import boto3
 
@@ -180,6 +180,7 @@ class LookupTables:
         # Initialize lookup dictionaries
         self._geocode_lookup: Optional[Dict[str, str]] = None
         self._tax_cat_lookup: Optional[Dict[str, str]] = None
+        self._tax_type_lookup: Optional[Dict[Tuple[str, str], List[str]]] = None
         self._state_name_to_code: Optional[Dict[str, str]] = None
         
         # Taxable status lookup (hardcoded as per requirements)
@@ -192,14 +193,27 @@ class LookupTables:
         }
     
     def _load_csv_from_s3(self, s3_key: str) -> Dict[str, str]:
-        """Load a CSV lookup table from S3."""
+        """Load a CSV lookup table from S3 (generic method)."""
         try:
             logger.info(f"Loading lookup table from s3://{self.s3_bucket}/{s3_key}")
             
             response = self.s3_client.get_object(Bucket=self.s3_bucket, Key=s3_key)
             csv_content = response['Body'].read().decode('utf-8')
             
-            # Parse CSV content
+            return csv_content
+            
+        except Exception as e:
+            logger.error(f"Error loading lookup table from {s3_key}: {e}")
+            return ""
+    
+    def _load_geocode_csv(self, s3_key: str) -> Dict[str, str]:
+        """Load geocode CSV and create state_code → geocode mapping."""
+        try:
+            csv_content = self._load_csv_from_s3(s3_key)
+            if not csv_content:
+                return {}
+            
+            # Parse CSV content for geocode lookup
             lookup_dict = {}
             csv_reader = csv.reader(io.StringIO(csv_content))
             
@@ -208,32 +222,115 @@ class LookupTables:
             
             for row in csv_reader:
                 if len(row) >= 2:
-                    # Key is first column, value is second column
-                    key = row[0].strip().strip('"')
-                    value = row[1].strip().strip('"')
-                    if key and value:
-                        lookup_dict[key] = value
+                    # CSV format: "geocode","state" so row[0]=geocode, row[1]=state_code
+                    geocode = row[0].strip().strip('"')
+                    state_code = row[1].strip().strip('"')
+                    
+                    if geocode and state_code:
+                        # Create state_code → geocode mapping (what we need for lookup)
+                        lookup_dict[state_code] = geocode
             
-            logger.info(f"Loaded {len(lookup_dict)} entries from {s3_key}")
+            logger.info(f"Loaded {len(lookup_dict)} geocode mappings from {s3_key}")
+            logger.debug(f"Sample geocode mappings: {dict(list(lookup_dict.items())[:3])}")
             return lookup_dict
             
         except Exception as e:
-            logger.error(f"Error loading lookup table from {s3_key}: {e}")
+            logger.error(f"Error loading geocode lookup from {s3_key}: {e}")
+            return {}
+    
+    def _load_tax_cat_csv(self, s3_key: str) -> Dict[str, str]:
+        """Load tax category CSV and create description → code mapping."""
+        try:
+            csv_content = self._load_csv_from_s3(s3_key)
+            if not csv_content:
+                return {}
+            
+            # Parse CSV content for tax category lookup
+            lookup_dict = {}
+            csv_reader = csv.reader(io.StringIO(csv_content))
+            
+            # Skip header row
+            next(csv_reader, None)
+            
+            for row in csv_reader:
+                if len(row) >= 2:
+                    # CSV format: "tax_cat","tax_cat_desc" so row[0]=code, row[1]=description
+                    tax_cat_code = row[0].strip().strip('"')
+                    tax_cat_desc = row[1].strip().strip('"')
+                    
+                    if tax_cat_code and tax_cat_desc:
+                        # Create description → code mapping (what we need for lookup)
+                        lookup_dict[tax_cat_desc] = tax_cat_code
+            
+            logger.info(f"Loaded {len(lookup_dict)} tax category mappings from {s3_key}")
+            logger.debug(f"Sample tax category mappings: {dict(list(lookup_dict.items())[:3])}")
+            return lookup_dict
+            
+        except Exception as e:
+            logger.error(f"Error loading tax category lookup from {s3_key}: {e}")
+            return {}
+    
+    def _load_tax_type_csv(self, s3_key: str) -> Dict[Tuple[str, str], List[str]]:
+        """Load tax type CSV and create (geocode, tax_cat) → tax_types mapping."""
+        try:
+            csv_content = self._load_csv_from_s3(s3_key)
+            if not csv_content:
+                return {}
+            
+            # Parse CSV content for tax type lookup
+            lookup_dict = {}
+            csv_reader = csv.reader(io.StringIO(csv_content))
+            
+            # Skip header row
+            next(csv_reader, None)
+            
+            for row in csv_reader:
+                if len(row) >= 3:
+                    # CSV format: "geocode","tax_cat","tax_type" 
+                    geocode = row[0].strip().strip('"')
+                    tax_cat = row[1].strip().strip('"')
+                    tax_type = row[2].strip().strip('"')
+                    
+                    if geocode and tax_cat and tax_type:
+                        # Create (geocode, tax_cat) → list of tax_types mapping
+                        key = (geocode, tax_cat)
+                        if key not in lookup_dict:
+                            lookup_dict[key] = []
+                        if tax_type not in lookup_dict[key]:
+                            lookup_dict[key].append(tax_type)
+            
+            # Sort tax_types for each key for consistent ordering
+            for key in lookup_dict:
+                lookup_dict[key].sort()
+            
+            logger.info(f"Loaded tax types for {len(lookup_dict)} geocode+tax_cat combinations from {s3_key}")
+            logger.debug(f"Sample tax type mappings: {dict(list(lookup_dict.items())[:3])}")
+            return lookup_dict
+            
+        except Exception as e:
+            logger.error(f"Error loading tax type lookup from {s3_key}: {e}")
             return {}
     
     @property
     def geocode_lookup(self) -> Dict[str, str]:
         """Get geocode lookup table, loading if necessary."""
         if self._geocode_lookup is None:
-            self._geocode_lookup = self._load_csv_from_s3("mapping/geo_state.csv")
+            self._geocode_lookup = self._load_geocode_csv("mapping/geo_state.csv")
         return self._geocode_lookup
     
     @property
     def tax_cat_lookup(self) -> Dict[str, str]:
         """Get tax category lookup table, loading if necessary."""
         if self._tax_cat_lookup is None:
-            self._tax_cat_lookup = self._load_csv_from_s3("mapping/tax_cat.csv")
+            self._tax_cat_lookup = self._load_tax_cat_csv("mapping/tax_cat.csv")
         return self._tax_cat_lookup
+    
+    @property
+    def tax_type_lookup(self) -> Dict[Tuple[str, str], List[str]]:
+        """Get tax type lookup table, loading if necessary."""
+        if self._tax_type_lookup is None:
+            self._tax_type_lookup = self._load_tax_type_csv("mapping/unique_tax_type.csv")
+        return self._tax_type_lookup
     
     def get_state_name_to_code_map(self) -> Dict[str, str]:
         """Get state name to state code mapping for filename parsing."""
@@ -281,4 +378,27 @@ class LookupTables:
     
     def get_taxable_status(self, taxable_text: str) -> int:
         """Get numeric taxable status from text."""
-        return self.taxable_lookup.get(taxable_text, TaxableStatus.TAXABLE.value)  # Default to taxable 
+        return self.taxable_lookup.get(taxable_text, TaxableStatus.TAXABLE.value)  # Default to taxable
+    
+    def get_tax_types_for_geocode_and_tax_cat(self, geocode: str, tax_cat: str) -> List[str]:
+        """Get list of tax types for a geocode+tax_cat combination, fallback to ['01'] if not found."""
+        # Make lookup case-insensitive
+        geocode_upper = geocode.upper().strip()
+        tax_cat_upper = tax_cat.upper().strip()
+        
+        # Try exact match first
+        key = (geocode_upper, tax_cat_upper)
+        tax_types = self.tax_type_lookup.get(key)
+        
+        if tax_types and len(tax_types) > 0:
+            return tax_types
+        
+        # Try case variations if exact match failed
+        for (lookup_geocode, lookup_tax_cat), lookup_tax_types in self.tax_type_lookup.items():
+            if (lookup_geocode.upper() == geocode_upper and 
+                lookup_tax_cat.upper() == tax_cat_upper):
+                return lookup_tax_types
+        
+        # Fallback to default
+        logger.debug(f"No tax types found for geocode='{geocode}' and tax_cat='{tax_cat}', using default ['01']")
+        return ["01"] 
