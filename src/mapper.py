@@ -273,7 +273,7 @@ class RowMapper:
                     )
                 else:
                     # Create both records - different tax treatment
-                    logger.debug(f"Different tax treatment for {current_id} - creating both BB and 99 customer records")
+                    logger.debug(f"Different tax treatment for {current_id} - creating both 0B and 99 customer records")
                     business_record = Record(
                         geocode=geocode,
                         tax_auth_id="",

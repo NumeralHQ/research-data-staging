@@ -101,7 +101,7 @@ class TestTaxTypeExpansion:
         assert sorted(tax_types) == ["01", "02", "03", "04", "05"]
     
     def test_different_treatment_creates_multiple_tax_types_for_both(self, row_mapper, config, header_map):
-        """Test that different treatment creates both BB and 99 records multiplied by tax types."""
+        """Test that different treatment creates both 0B and 99 records multiplied by tax types."""
         # Row with different business and personal treatment
         row = [
             "2.2.2.2.0.0.0.0",    # current_id
@@ -133,7 +133,7 @@ class TestTaxTypeExpansion:
         assert len(expanded_records) == 4
         
         # Separate business and personal records
-        business_records = [r for r in expanded_records if r.customer == "BB"]
+        business_records = [r for r in expanded_records if r.customer == "0B"]
         personal_records = [r for r in expanded_records if r.customer == "99"]
         
         assert len(business_records) == 2  # 2 tax types
@@ -141,7 +141,7 @@ class TestTaxTypeExpansion:
         
         # Check business records
         for record in business_records:
-            assert record.customer == CustomerType.BUSINESS.value  # "BB"
+            assert record.customer == CustomerType.BUSINESS.value  # "0B"
             assert record.taxable == TaxableValue.TAXABLE.value
             assert record.percent_taxable == "1.000000"
         
@@ -191,7 +191,7 @@ class TestTaxTypeExpansion:
         assert len(expanded_records) == 1
         
         record = expanded_records[0]
-        assert record.customer == CustomerType.BUSINESS.value  # "BB"
+        assert record.customer == CustomerType.BUSINESS.value  # "0B"
         assert record.tax_type == "01"
         assert record.taxable == TaxableValue.TAXABLE.value
     
@@ -241,12 +241,12 @@ class TestTaxTypeExpansion:
         assert error is None
         
         # First row: identical treatment = 1 template × 5 tax types = 5 records (all 99)
-        # Second row: different treatment = 2 templates × 5 tax types = 10 records (5 BB + 5 99)
+        # Second row: different treatment = 2 templates × 5 tax types = 10 records (5 0B + 5 99)
         # Total: 5 + 10 = 15 records
         assert len(records) == 15
         
         # Count by customer type
-        business_records = [r for r in records if r.customer == "BB"]
+        business_records = [r for r in records if r.customer == "0B"]
         personal_records = [r for r in records if r.customer == "99"]
         
         assert len(business_records) == 5   # Only from second row (different treatment)
@@ -383,7 +383,7 @@ class TestTaxTypeExpansion:
         assert len(expanded_records) == 7
         
         # Separate business and personal records
-        business_records = [r for r in expanded_records if r.customer == "BB"]
+        business_records = [r for r in expanded_records if r.customer == "0B"]
         personal_records = [r for r in expanded_records if r.customer == "99"]
         
         assert len(business_records) == 5  # 5 tax types for tax_cat=05

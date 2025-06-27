@@ -21,7 +21,7 @@ class TaxableStatus(Enum):
 
 class CustomerType(Enum):
     """Enumeration for customer types."""
-    BUSINESS = "BB"
+    BUSINESS = "0B"
     PERSONAL = "99"
 
 

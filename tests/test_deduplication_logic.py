@@ -77,7 +77,7 @@ class TestDeduplicationLogic:
         assert personal_record.tax_cat == "05"
     
     def test_different_tax_treatment_creates_both_records(self, row_mapper, config, header_map):
-        """Test that different tax treatment creates both BB and 99 customer records."""
+        """Test that different tax treatment creates both 0B and 99 customer records."""
         # Row with different business and personal tax treatment
         row = [
             "1.2.3.4.0.0.0.0",    # current_id
@@ -108,7 +108,7 @@ class TestDeduplicationLogic:
         assert personal_record is not None
         
         # Verify business record
-        assert business_record.customer == CustomerType.BUSINESS.value  # "BB"
+        assert business_record.customer == CustomerType.BUSINESS.value  # "0B"
         assert business_record.taxable == TaxableValue.TAXABLE.value
         assert business_record.tax_cat == "10"
         assert business_record.percent_taxable == "1.000000"
@@ -144,7 +144,7 @@ class TestDeduplicationLogic:
         assert personal_record is None
         
         # Verify business record
-        assert business_record.customer == CustomerType.BUSINESS.value  # "BB"
+        assert business_record.customer == CustomerType.BUSINESS.value  # "0B"
         assert business_record.taxable == TaxableValue.TAXABLE.value
         assert business_record.tax_cat == "15"
         assert business_record.percent_taxable == "0.087500"
@@ -339,7 +339,7 @@ class TestDeduplicationLogic:
         
         # Check that debug logging was called for different treatment
         mock_logger.debug.assert_called_with(
-            "Different tax treatment for 8.1.1.1.0.0.0.0 - creating both BB and 99 customer records"
+            "Different tax treatment for 8.1.1.1.0.0.0.0 - creating both 0B and 99 customer records"
         )
 
     def test_same_taxable_and_tax_cat_different_percent_creates_both_records(self, row_mapper, config, header_map):
@@ -428,7 +428,7 @@ class TestDeduplicationLogic:
         # Verify the specific rates
         assert business_record.percent_taxable == "0.105000"  # 10.5%
         assert personal_record.percent_taxable == "0.052500"  # 5.25%
-        assert business_record.customer == CustomerType.BUSINESS.value  # "BB"
+        assert business_record.customer == CustomerType.BUSINESS.value  # "0B"
         assert personal_record.customer == CustomerType.PERSONAL.value  # "99"
 
     def test_personal_higher_rate_than_business_creates_both_records(self, row_mapper, config, header_map):

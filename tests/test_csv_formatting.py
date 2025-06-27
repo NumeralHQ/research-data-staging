@@ -56,7 +56,7 @@ def test_csv_formatting():
     
     # Test specific values
     assert csv_row[0] == '"US1800000000"'  # geocode
-    assert csv_row[4] == '"BB"'  # customer (business)
+    assert csv_row[4] == '"0B"'  # customer (business)
     assert csv_row[10] == '"2024-01-01"'  # effective date from env var
     assert csv_row[12] == '"0.875000"'  # percent_taxable
     

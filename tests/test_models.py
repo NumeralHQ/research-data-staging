@@ -26,7 +26,7 @@ def test_record_creation():
     )
     
     assert record.geocode == "US0600000000"
-    assert record.customer == "BB"
+    assert record.customer == "0B"
     assert record.percent_taxable == Decimal("1.000000")
 
 
