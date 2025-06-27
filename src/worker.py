@@ -26,8 +26,146 @@ class SheetWorker:
         # Create a unique worker ID for logging
         self.worker_id = str(uuid.uuid4())[:8]
     
+    def _parse_hierarchical_id(self, item_id: str) -> List[str]:
+        """
+        Parse hierarchical ID and generate parent IDs.
+        
+        Args:
+            item_id: ID like "1.1.1.4.3.0.0.0"
+            
+        Returns:
+            List of parent IDs in order: ["1.0.0.0.0.0.0.0", "1.1.0.0.0.0.0.0", ...]
+        """
+        try:
+            # Split the ID into parts
+            parts = item_id.split('.')
+            
+            # Ensure we have 8 parts (pad with zeros if needed)
+            while len(parts) < 8:
+                parts.append('0')
+            
+            # Only use first 8 parts if there are more
+            parts = parts[:8]
+            
+            parent_ids = []
+            
+            # Generate parent IDs by keeping first N parts and zeroing the rest
+            for level in range(1, len(parts)):
+                # Skip if this level is already zero (no parent at this level)
+                if parts[level] == '0':
+                    continue
+                    
+                # Create parent ID: keep first 'level' parts, zero the rest
+                parent_parts = parts[:level] + ['0'] * (8 - level)
+                parent_id = '.'.join(parent_parts)
+                
+                # Only add if it's not the same as the original ID
+                if parent_id != item_id:
+                    parent_ids.append(parent_id)
+            
+            return parent_ids
+            
+        except Exception as e:
+            logger.warning(f"Error parsing hierarchical ID '{item_id}': {e}")
+            return []
+    
+    def _build_description_lookup(self, sheet_data: List[List[Any]], header_mapping: Dict[str, int]) -> Dict[str, str]:
+        """
+        Build lookup dictionary mapping item_id to description for all rows in the sheet.
+        
+        Args:
+            sheet_data: All rows from the sheet
+            header_mapping: Column index mapping
+            
+        Returns:
+            Dictionary mapping item_id to concatenated description from columns C:J
+        """
+        lookup_dict = {}
+        current_id_col_idx = header_mapping.get('current_id')
+        
+        if current_id_col_idx is None:
+            logger.warning("Current ID column not found, cannot build description lookup")
+            return lookup_dict
+        
+        for row_idx, row_data in enumerate(sheet_data):
+            try:
+                # Extract Current ID
+                item_id = ""
+                if len(row_data) > current_id_col_idx and row_data[current_id_col_idx]:
+                    item_id = str(row_data[current_id_col_idx]).strip()
+                
+                if not item_id:
+                    continue  # Skip rows with empty Current ID
+                
+                # Extract description from columns C:J (indices 2-9)
+                description_parts = []
+                for col_idx in range(2, 10):  # Columns C through J (indices 2-9)
+                    if len(row_data) > col_idx and row_data[col_idx]:
+                        part = str(row_data[col_idx]).strip()
+                        if part:
+                            description_parts.append(part)
+                
+                # Direct concatenation with no separators
+                description = "".join(description_parts).strip()
+                
+                # Store in lookup (even if empty - we'll handle that in hierarchical building)
+                lookup_dict[item_id] = description
+                    
+            except Exception as e:
+                logger.warning(f"Error building description lookup for row {row_idx}: {e}")
+                continue
+        
+        logger.debug(f"Built description lookup with {len(lookup_dict)} entries")
+        return lookup_dict
+    
+    def _build_hierarchical_description(self, item_id: str, lookup_dict: Dict[str, str]) -> str:
+        """
+        Build hierarchical description by combining parent descriptions with item's own description.
+        
+        Args:
+            item_id: The item ID to build description for
+            lookup_dict: Dictionary mapping item_id to description
+            
+        Returns:
+            Hierarchical description like "Parent1 | Parent2 | Own Description"
+        """
+        try:
+            # Get parent IDs in hierarchical order
+            parent_ids = self._parse_hierarchical_id(item_id)
+            
+            # Build description parts
+            description_parts = []
+            
+            # Add parent descriptions
+            for parent_id in parent_ids:
+                parent_desc = lookup_dict.get(parent_id, "").strip()
+                if parent_desc:
+                    description_parts.append(parent_desc)
+                else:
+                    # Missing or empty parent description - add space as requested
+                    description_parts.append(" ")
+            
+            # Add own description
+            own_desc = lookup_dict.get(item_id, "").strip()
+            if own_desc:
+                description_parts.append(own_desc)
+            else:
+                # Empty own description - add space as requested
+                description_parts.append(" ")
+            
+            # Join with " | " separator
+            hierarchical_description = " | ".join(description_parts)
+            
+            logger.debug(f"Built hierarchical description for {item_id}: '{hierarchical_description}'")
+            return hierarchical_description
+            
+        except Exception as e:
+            logger.warning(f"Error building hierarchical description for '{item_id}': {e}")
+            # Fallback to original description
+            return lookup_dict.get(item_id, " ")
+    
     def _extract_product_items_from_rows(self, sheet_data: List[List[Any]], header_mapping: Dict[str, int], file_name: str) -> List[ProductItem]:
-        """Extract product items from sheet rows that match the admin filter."""
+        """Extract product items from sheet rows that match the admin filter with hierarchical descriptions."""
         product_items = []
         
         # Get column indices
@@ -49,6 +187,11 @@ class SheetWorker:
         
         logger.info(f"{file_name}: Extracting product items from rows (Admin col: {admin_col_idx}, Current ID col: {current_id_col_idx})")
         
+        # Step 1: Build description lookup for all rows in the sheet (for hierarchical descriptions)
+        logger.debug(f"{file_name}: Building description lookup for hierarchical descriptions")
+        description_lookup = self._build_description_lookup(sheet_data, header_mapping)
+        
+        # Step 2: Extract product items with hierarchical descriptions
         for row_idx, row_data in enumerate(sheet_data):
             try:
                 # Check admin filter first
@@ -86,23 +229,14 @@ class SheetWorker:
                 if should_skip:
                     continue  # Skip this row entirely due to uncertain taxable status
                 
-                # Extract description from columns C:J (indices 2-9)
-                # These correspond to L1, L2, L3, L4, L5, L6, L7, L8 headers
-                description_parts = []
-                for col_idx in range(2, 10):  # Columns C through J (indices 2-9)
-                    if len(row_data) > col_idx and row_data[col_idx]:
-                        part = str(row_data[col_idx]).strip()
-                        if part:
-                            description_parts.append(part)
+                # Build hierarchical description for this item
+                hierarchical_description = self._build_hierarchical_description(item_id, description_lookup)
                 
-                # Direct concatenation with no separators
-                description = "".join(description_parts).strip()
+                if not hierarchical_description or hierarchical_description.strip() == "":
+                    continue  # Skip rows with completely empty hierarchical description
                 
-                if not description:
-                    continue  # Skip rows with empty description
-                
-                # Create ProductItem
-                product_item = ProductItem(item_id, description)
+                # Create ProductItem with hierarchical description
+                product_item = ProductItem(item_id, hierarchical_description)
                 if product_item.is_valid():
                     product_items.append(product_item)
                     
@@ -110,7 +244,7 @@ class SheetWorker:
                 logger.warning(f"{file_name}: Error processing row {row_idx + config.header_row + 1} for product items: {e}")
                 continue
         
-        logger.info(f"{file_name}: Extracted {len(product_items)} product items")
+        logger.info(f"{file_name}: Extracted {len(product_items)} product items with hierarchical descriptions")
         return product_items
     
     async def process_sheet(self, file_info: Dict[str, Any], header_mapping: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
