@@ -21,9 +21,9 @@ def test_static_files_exist():
     csv_files = list(data_dir.glob("*.csv"))
     assert len(csv_files) > 0, f"Data directory should contain CSV files: {data_dir}"
     
-    # Specifically check for product_group_append.csv
-    product_group_file = data_dir / "product_group_append.csv"
-    assert product_group_file.exists(), f"product_group_append.csv should exist: {product_group_file}"
+    # Specifically check for product_group_update.csv
+    product_group_file = data_dir / "product_group_update.csv"
+    assert product_group_file.exists(), f"product_group_update.csv should exist: {product_group_file}"
     
     print(f"✅ Found {len(csv_files)} CSV file(s) in {data_dir}")
     for csv_file in csv_files:
@@ -43,7 +43,7 @@ async def test_upload_static_files_success():
     output_folder = "output-20241201-1200"
     
     with patch.object(orchestrator, '_upload_static_files_to_s3') as mock_upload:
-        mock_upload.return_value = ["output-20241201-1200/product_group_append.csv"]
+        mock_upload.return_value = ["output-20241201-1200/product_group_update.csv"]
         
         result = await orchestrator._upload_static_files_to_s3(output_folder)
         

@@ -58,7 +58,7 @@ class TaxableValue(int, Enum):
 
 
 class Record:
-    """Represents a single CSV record for matrix_append.csv output."""
+    """Represents a single CSV record for matrix_update.csv output."""
     
     def __init__(self, geocode: str, tax_auth_id: str, group: str, item: str, 
                  customer: str, provider: str, transaction: str, taxable: int,
@@ -110,7 +110,7 @@ class Record:
 
 
 class ProductItem:
-    """Represents a product item for the product_item_append.csv output."""
+    """Represents a product item for the product_item_update.csv output."""
     
     def __init__(self, item_id: str, description: str):
         self.group = "ZZZZ"  # Always ZZZZ as specified

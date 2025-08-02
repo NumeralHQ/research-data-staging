@@ -39,9 +39,9 @@ def test_folder_structure_example():
     folder_name = orchestrator._generate_output_folder()
     
     # Example file paths
-    csv_path = f"{folder_name}/matrix_append.csv"
-    static_csv_path = f"{folder_name}/product_group_append.csv"
-    product_item_csv_path = f"{folder_name}/product_item_append.csv"
+    csv_path = f"{folder_name}/matrix_update.csv"
+    static_csv_path = f"{folder_name}/product_group_update.csv"
+    product_item_csv_path = f"{folder_name}/product_item_update.csv"
     errors_path = f"{folder_name}/errors.json"
     
     print(f"📁 Output folder: {folder_name}")
@@ -51,9 +51,9 @@ def test_folder_structure_example():
     print(f"❌ Errors file path: {errors_path}")
     
     # Verify paths are constructed correctly
-    assert csv_path.endswith('/matrix_append.csv'), "Matrix CSV path should end with '/matrix_append.csv'"
-    assert static_csv_path.endswith('/product_group_append.csv'), "Static CSV path should end with '/product_group_append.csv'"
-    assert product_item_csv_path.endswith('/product_item_append.csv'), "Product item CSV path should end with '/product_item_append.csv'"
+    assert csv_path.endswith('/matrix_update.csv'), "Matrix CSV path should end with '/matrix_update.csv'"
+    assert static_csv_path.endswith('/product_group_update.csv'), "Static CSV path should end with '/product_group_update.csv'"
+    assert product_item_csv_path.endswith('/product_item_update.csv'), "Product item CSV path should end with '/product_item_update.csv'"
     assert errors_path.endswith('/errors.json'), "Errors path should end with '/errors.json'"
     assert csv_path.startswith(folder_name), "Matrix CSV path should start with folder name"
     assert static_csv_path.startswith(folder_name), "Static CSV path should start with folder name"
@@ -68,9 +68,9 @@ def test_expected_output_structure():
     
     # All expected files in output folder
     expected_files = [
-        f"{folder_name}/matrix_append.csv",        # Generated matrix CSV
-        f"{folder_name}/product_group_append.csv", # Static product group CSV
-        f"{folder_name}/product_item_append.csv",  # Generated product item CSV
+        f"{folder_name}/matrix_update.csv",        # Generated matrix CSV
+        f"{folder_name}/product_group_update.csv", # Static product group CSV
+        f"{folder_name}/product_item_update.csv",  # Generated product item CSV
         f"{folder_name}/errors.json"               # Error log (optional)
     ]
     
