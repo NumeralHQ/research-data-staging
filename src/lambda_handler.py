@@ -41,6 +41,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     sys.stderr.write("DEBUG: lambda_handler function called\n")
     sys.stderr.flush()
     print("LAMBDA HANDLER CALLED - lambda_handler function started")
+    
     logger.info("LAMBDA HANDLER CALLED - Research data aggregation Lambda started", extra={"event": event})
     
     try:

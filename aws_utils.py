@@ -317,7 +317,21 @@ class AWSManager:
             Tuple of (success: bool, result: dict)
         """
         try:
-            lambda_client = boto3.client('lambda', region_name=AWS_REGION)
+            # Ensure fresh boto3 session to prevent credential caching issues
+            boto3.DEFAULT_SESSION = None
+            
+            # Create Lambda client with explicit retry configuration to prevent multiple invocations
+            from botocore.config import Config
+            lambda_config = Config(
+                retries={
+                    'max_attempts': 1,  # NO RETRIES - single attempt only
+                    'mode': 'standard'
+                },
+                read_timeout=6000,  # 10 minutes - longer than Lambda execution
+                connect_timeout=60  # 1 minute connection timeout
+            )
+            
+            lambda_client = boto3.client('lambda', region_name=AWS_REGION, config=lambda_config)
             
             # Prepare payload
             if payload is None:

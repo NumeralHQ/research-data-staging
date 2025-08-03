@@ -390,8 +390,18 @@ def deploy_existing_zip():
     
     return success
 
+# Global flag to prevent multiple invocations in same script run
+_lambda_invoked = False
+
 def invoke_lambda():
     """Invoke the Lambda function remotely."""
+    global _lambda_invoked
+    
+    if _lambda_invoked:
+        print("⚠️  Lambda function already invoked in this script run. Skipping duplicate.")
+        return False
+    
+    _lambda_invoked = True
     print("🚀 Invoking Lambda function remotely...")
     
     if AWSManager is None:
