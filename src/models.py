@@ -9,6 +9,12 @@ from typing import Dict, List, Optional, Union, Any, Set, Tuple
 
 import boto3
 
+# Handle both relative and absolute imports for compatibility
+try:
+    from .product_code_mapper import ProductCodeMapper
+except ImportError:
+    from product_code_mapper import ProductCodeMapper
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +53,7 @@ class PerTaxableType(str, Enum):
 
 class GroupType(str, Enum):
     """Group type codes."""
-    DEFAULT = "ZZZZ"
+    DEFAULT = "7777"
 
 
 class TaxableValue(int, Enum):
@@ -113,7 +119,7 @@ class ProductItem:
     """Represents a product item for the product_item_update.csv output."""
     
     def __init__(self, item_id: str, description: str):
-        self.group = "ZZZZ"  # Always ZZZZ as specified
+        self.group = "7777"  # Always 7777 as specified
         self.item = item_id.strip() if item_id else ""
         self.description = description.strip() if description else ""
     
@@ -182,6 +188,9 @@ class LookupTables:
         self._tax_cat_lookup: Optional[Dict[str, str]] = None
         self._tax_type_lookup: Optional[Dict[Tuple[str, str], List[str]]] = None
         self._state_name_to_code: Optional[Dict[str, str]] = None
+        
+        # Product code mapper for research_id to 3-character code conversion
+        self.product_code_mapper = ProductCodeMapper(s3_bucket)
         
         # Taxable status lookup (hardcoded as per requirements)
         self.taxable_lookup = {
@@ -401,4 +410,8 @@ class LookupTables:
         
         # Fallback to default
         logger.debug(f"No tax types found for geocode='{geocode}' and tax_cat='{tax_cat}', using default ['01']")
-        return ["01"] 
+        return ["01"]
+    
+    async def initialize_product_code_mapper(self) -> None:
+        """Initialize the product code mapper by loading mapping data."""
+        await self.product_code_mapper.load_mapping() 

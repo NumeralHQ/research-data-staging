@@ -179,6 +179,44 @@ class ResearchDataOrchestrator:
         
         return static_file_keys
     
+    def _filter_and_convert_record_research_ids(self, records: List[Record]) -> List[Record]:
+        """Filter out unmapped research_ids and convert remaining to 3-character codes."""
+        filtered_records = []
+        for record in records:
+            converted_code = self.lookup_tables.product_code_mapper.convert_research_id(record.item)
+            if converted_code:  # Only include records with mapped research_ids
+                # Create new record with converted item code
+                converted_record = Record(
+                    geocode=record.geocode,
+                    tax_auth_id=record.tax_auth_id,
+                    group=record.group,
+                    item=converted_code,  # ← 3-CHARACTER PADDED CODE HERE
+                    customer=record.customer,
+                    provider=record.provider,
+                    transaction=record.transaction,
+                    taxable=record.taxable,
+                    tax_type=record.tax_type,
+                    tax_cat=record.tax_cat,
+                    effective=record.effective,
+                    per_taxable_type=record.per_taxable_type,
+                    percent_taxable=record.percent_taxable
+                )
+                filtered_records.append(converted_record)
+            # Unmapped IDs are automatically tracked in ProductCodeMapper
+        return filtered_records
+
+    def _filter_and_convert_product_item_research_ids(self, product_items: List[ProductItem]) -> List[ProductItem]:
+        """Filter out unmapped research_ids and convert remaining to 3-character codes."""
+        filtered_items = []
+        for item in product_items:
+            converted_code = self.lookup_tables.product_code_mapper.convert_research_id(item.item)
+            if converted_code:  # Only include items with mapped research_ids
+                # Create new ProductItem with converted item code
+                converted_item = ProductItem(converted_code, item.description)
+                filtered_items.append(converted_item)
+            # Unmapped IDs are automatically tracked in ProductCodeMapper
+        return filtered_items
+    
     async def _upload_errors_to_s3(self, errors: List[Dict[str, Any]], output_folder: str) -> Optional[str]:
         """Upload error information to S3 if there are any errors."""
         if not errors:
@@ -230,6 +268,10 @@ class ResearchDataOrchestrator:
         logger.info(f"Output folder for this run: {output_folder}")
         
         try:
+            # Step 0: Initialize product code mapper
+            logger.info("Initializing product code mapper")
+            await self.lookup_tables.initialize_product_code_mapper()
+            
             # Step 1: List all spreadsheets in the folder
             logger.info(f"Listing spreadsheets in folder: {config.drive_folder_id}")
             files = await self.drive_client.list_files_in_folder(config.drive_folder_id)
@@ -280,28 +322,47 @@ class ResearchDataOrchestrator:
             if failed_results:
                 self._log_processing_errors(failed_results)
             
-            # Step 5: Generate and upload matrix CSV
+            # Step 5: Filter unmapped research_ids and generate matrix CSV
             csv_key = None
             if all_records:
-                logger.info(f"Generating matrix CSV with {len(all_records)} records")
-                csv_content = self._create_csv_content(all_records)
-                csv_key = await self._upload_csv_to_s3(csv_content, output_folder)
+                logger.info(f"Filtering and converting research_ids to product codes for {len(all_records)} records")
+                filtered_records = self._filter_and_convert_record_research_ids(all_records)
+                
+                excluded_count = len(all_records) - len(filtered_records)
+                if excluded_count > 0:
+                    logger.warning(f"Excluded {excluded_count} records with unmapped research_ids")
+                
+                if filtered_records:
+                    logger.info(f"Generating matrix CSV with {len(filtered_records)} mapped records")
+                    csv_content = self._create_csv_content(filtered_records)
+                    csv_key = await self._upload_csv_to_s3(csv_content, output_folder)
+                else:
+                    logger.warning("No records with mapped research_ids, skipping matrix CSV upload")
             else:
                 logger.warning("No matrix records generated, skipping matrix CSV upload")
             
-            # Step 6: Process and upload product items CSV
+            # Step 6: Filter unmapped research_ids and process product items CSV
             product_item_key = None
             if all_product_items:
-                logger.info(f"Processing {len(all_product_items)} product items")
-                # Deduplicate product items by item ID
-                unique_product_items = self._deduplicate_product_items(all_product_items)
+                logger.info(f"Filtering and converting research_ids to product codes for {len(all_product_items)} product items")
+                filtered_product_items = self._filter_and_convert_product_item_research_ids(all_product_items)
                 
-                if unique_product_items:
-                    logger.info(f"Generating product item CSV with {len(unique_product_items)} unique items")
-                    product_item_csv_content = self._create_product_item_csv_content(unique_product_items)
-                    product_item_key = await self._upload_product_item_csv_to_s3(product_item_csv_content, output_folder)
+                excluded_count = len(all_product_items) - len(filtered_product_items)
+                if excluded_count > 0:
+                    logger.warning(f"Excluded {excluded_count} product items with unmapped research_ids")
+                
+                if filtered_product_items:
+                    # Deduplicate product items by item ID (now using converted codes)
+                    unique_product_items = self._deduplicate_product_items(filtered_product_items)
+                    
+                    if unique_product_items:
+                        logger.info(f"Generating product item CSV with {len(unique_product_items)} unique mapped items")
+                        product_item_csv_content = self._create_product_item_csv_content(unique_product_items)
+                        product_item_key = await self._upload_product_item_csv_to_s3(product_item_csv_content, output_folder)
+                    else:
+                        logger.warning("No unique product items found after deduplication, skipping product item CSV upload")
                 else:
-                    logger.warning("No unique product items found, skipping product item CSV upload")
+                    logger.warning("No product items with mapped research_ids, skipping product item CSV upload")
             else:
                 logger.warning("No product items generated, skipping product item CSV upload")
             
@@ -321,20 +382,41 @@ class ResearchDataOrchestrator:
             for processing_error in all_processing_errors:
                 all_errors.append(processing_error.to_dict())
             
+            # Add unmapped research_id errors (records excluded from output)
+            unmapped_ids = self.lookup_tables.product_code_mapper.get_unmapped_ids()
+            if unmapped_ids:
+                all_errors.append({
+                    "error_type": "ExcludedUnmappedResearchIds",
+                    "count": len(unmapped_ids),
+                    "research_ids": unmapped_ids,  # Already sorted in get_unmapped_ids()
+                    "message": f"{len(unmapped_ids)} research_ids could not be mapped to product codes and were excluded from output files",
+                    "impact": "These records do not appear in matrix_update.csv or product_item_update.csv"
+                })
+            
             error_key = await self._upload_errors_to_s3(all_errors, output_folder)
             
             # Step 8: Upload static data files
             logger.info("Uploading static data files")
             static_file_keys = await self._upload_static_files_to_s3(output_folder)
             
-            # Step 9: Return results
+            # Step 9: Return results with filtering statistics
+            # Calculate filtered counts for reporting
+            filtered_records_count = len(self._filter_and_convert_record_research_ids(all_records)) if all_records else 0
+            filtered_product_items = self._filter_and_convert_product_item_research_ids(all_product_items) if all_product_items else []
+            unique_filtered_items = len(self._deduplicate_product_items(filtered_product_items))
+            
             result = {
                 "success": True,
                 "output_folder": output_folder,
                 "files_processed": len(files),
                 "records_generated": len(all_records),
+                "records_with_mapped_codes": filtered_records_count,
+                "records_excluded": len(all_records) - filtered_records_count if all_records else 0,
                 "product_items_generated": len(all_product_items),
-                "unique_product_items": len(self._deduplicate_product_items(all_product_items)) if all_product_items else 0,
+                "product_items_with_mapped_codes": len(filtered_product_items),
+                "product_items_excluded": len(all_product_items) - len(filtered_product_items) if all_product_items else 0,
+                "unique_product_items": unique_filtered_items,
+                "unmapped_research_ids": len(self.lookup_tables.product_code_mapper.get_unmapped_ids()),
                 "errors": len(failed_results) + len(all_processing_errors),
                 "csv_key": csv_key,
                 "product_item_key": product_item_key,

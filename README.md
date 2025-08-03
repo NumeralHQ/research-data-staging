@@ -46,6 +46,7 @@ research-data-staging/
 │   ├── sheets_client.py   # Google Sheets helper with retry logic + header caching + thread pool
 │   ├── models.py          # Simplified data models / lookups / enums (no Pydantic)
 │   ├── mapper.py          # row → CSV record conversion with percentage parsing
+│   ├── product_code_mapper.py  # research_id → 3-char code conversion service
 │   ├── worker.py          # async processing for one sheet with concurrency control
 │   ├── orchestrator.py    # fan-out/fan-in logic with Pacific Time + static file upload
 │   ├── lambda_handler.py  # AWS entry-point with Powertools
@@ -53,13 +54,16 @@ research-data-staging/
 │       └── product_group_append.csv  # Static product group data
 ├── mapping/               # Lookup tables
 │   ├── geo_state.csv      # State → geocode (✅ implemented)
-│   └── tax_cat.csv        # tax_cat text → 2-char code (✅ implemented)
+│   ├── tax_cat.csv        # tax_cat text → 2-char code (✅ implemented)
+│   └── product_code_mapping.csv  # research_id → 3-char item code (✅ implemented)
 ├── tests/                 # Unit tests
 │   ├── __init__.py
 │   ├── test_models.py     # Model validation and CSV output tests
 │   ├── test_imports.py    # Import validation and basic functionality
 │   ├── test_geocode.py    # Geocode lookup functionality tests
-│   └── test_concurrent_fix.py  # Thread pool concurrency validation tests
+│   ├── test_concurrent_fix.py  # Thread pool concurrency validation tests
+│   ├── test_product_code_mapper.py  # Product code mapping unit tests
+│   └── test_conversion_integration.py  # Integration tests for code conversion
 ├── infrastructure/        # AWS infrastructure
 │   └── template.yaml      # Complete AWS SAM template with optimized rate limiting
 ├── lambda-package/        # Deployment package (auto-generated)
@@ -154,22 +158,28 @@ The generated CSV will always emit columns in **this exact order**:
 
 ## 6. Execution Flow (✅ OPTIMIZED WITH TRUE CONCURRENCY)
 1. **orchestrator.lambda_handler** is invoked.
-2. List all files inside `DRIVE_FOLDER_ID` (mimeType = spreadsheet).
-3. **Header mapping optimization**: Read header row from the first sheet once and reuse for all subsequent sheets.
-4. **True concurrent processing**: Launch `MAX_CONCURRENT_REQUESTS` async tasks with:
+2. **Product Code Mapper Initialization**: Load `product_code_mapping.csv` from S3 for research_id conversion.
+3. List all files inside `DRIVE_FOLDER_ID` (mimeType = spreadsheet).
+4. **Header mapping optimization**: Read header row from the first sheet once and reuse for all subsequent sheets.
+5. **True concurrent processing**: Launch `MAX_CONCURRENT_REQUESTS` async tasks with:
    - **Thread Pool Executor**: Google API calls run in separate threads for true parallelism
    - **Global Rate Limiting**: Class-level 50ms intervals shared across all clients
    - **Semaphore Control**: Maintains concurrency limits while enabling parallel execution
-5. **worker.py** (for each sheet, using the shared header map):
+6. **worker.py** (for each sheet, using the shared header map):
    a. Pull sheet data via Sheets API (optimized to fetch only data rows).
    b. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
    c. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
-6. `orchestrator` gathers all `Record`s, streams them into a `csv.writer` **in the fixed column order**.
-7. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
-8. **Deduplication**: Remove duplicate product items by Item ID, keeping first occurrence.
-9. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_append.csv` and `product_item_append.csv` (timestamp in America/Los_Angeles).
-10. Upload static data files from `src/data/` directory (e.g., `product_group_append.csv`) to the same output folder.
-11. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
+7. `orchestrator` gathers all `Record`s and applies **Product Code Conversion**:
+   - Converts research_ids to 3-character item codes using the mapping
+   - Excludes records with unmapped research_ids from output
+   - Tracks unmapped research_ids for error reporting
+8. Streams converted records into a `csv.writer` **in the fixed column order**.
+9. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
+10. **Product Item Code Conversion**: Convert product item research_ids to 3-character codes and exclude unmapped items.
+11. **Deduplication**: Remove duplicate product items by converted Item ID, keeping first occurrence.
+12. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_update.csv` and `product_item_update.csv` (timestamp in America/Los_Angeles).
+13. Upload static data files from `src/data/` directory (e.g., `product_group_update.csv`) to the same output folder.
+14. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
 
@@ -195,6 +205,12 @@ See `mapper.py` for canonical reference.  Key features:
 - Input: `'1.0'` → Output: `'1.000000'` in CSV (preserves decimal values when no % symbol)
 - Automatically detects and handles both percentage strings and decimal values
 
+**Product Code Conversion**: Converts hierarchical research_ids to 3-character item codes
+- **Mapping File**: `mapping/product_code_mapping.csv` with columns: research_id, taxonomy_id, product_id, group, item, description
+- **Normalization**: Removes trailing `.0` segments (e.g., "1.1.1.4.3.0.0.0" → "1.1.1.4.3" for matching)
+- **Code Padding**: Pads item codes to exactly 3 characters with leading zeros (e.g., "5" → "005", "22" → "022")
+- **Error Handling**: Unmapped research_ids are excluded from output files and tracked in `errors.json`
+
 **Geocode Lookup**: Extracts state name from filename, maps to 12-digit geocode
 - `taxable` → mapping table `{Not Taxable|Nontaxable|Exempt:0, Taxable:1, "Drill Down":-1}`.
 
@@ -211,13 +227,13 @@ See `mapper.py` for canonical reference.  Key features:
 - **Row Filter**: Only process rows where Admin column (K) = "Tag Level" (same as matrix processing)
 - **Item ID**: Extract from Current ID column (Column B)
 - **Description**: Direct concatenation of columns C:J (L1, L2, L3, L4, L5, L6, L7, L8 headers) with no separators
-- **Group**: Always set to "ZZZZ" for all product items
+- **Group**: Always set to "7777" for all product items
 
 **Processing Logic:**
 ```csv
 "group","item","description"
-"ZZZZ","ITEM001","Product Name From Columns C-J"
-"ZZZZ","ITEM002","Another Product Description"
+"7777","ITEM001","Product Name From Columns C-J"
+"7777","ITEM002","Another Product Description"
 ```
 
 **Deduplication**: Remove duplicate items by Item ID, keeping first occurrence
@@ -302,6 +318,10 @@ python tests/test_geocode.py
 # Test true concurrency with thread pool
 pytest tests/test_concurrent_fix.py -v
 
+# Test product code mapping functionality
+pytest tests/test_product_code_mapper.py -v
+pytest tests/test_conversion_integration.py -v
+
 # Build deployment package (interactive mode)
 python build.py
 
@@ -316,7 +336,9 @@ python build.py --full
 - **`test_imports.py`**: Validates all module imports and basic functionality without external dependencies
 - **`test_models.py`**: Tests Record model creation, validation, and CSV output formatting
 - **`test_geocode.py`**: Tests geocode lookup from filenames using local mapping files
-- **`test_concurrent_fix.py`**: **NEW** - Validates thread pool executor enables true concurrent processing
+- **`test_concurrent_fix.py`**: Validates thread pool executor enables true concurrent processing
+- **`test_product_code_mapper.py`**: **NEW** - Unit tests for research_id to 3-character code conversion
+- **`test_conversion_integration.py`**: **NEW** - Integration tests for end-to-end product code conversion
 - **`test_config.env`**: Environment variables for local testing (can be sourced or copied to `.env`)
 
 **Test concurrency performance:**
@@ -510,7 +532,8 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 - **Concurrency**: Thread pool executor for true parallel processing
 - **Performance**: 5x speed improvement with optimized rate limiting
 - **CSV Formatting**: All values wrapped in quotes with proper escaping
-- **Testing**: Comprehensive test suite including CSV formatting validation
+- **Product Code Conversion**: research_id to 3-character code mapping with error handling
+- **Testing**: Comprehensive test suite including product code conversion validation
 - **Security**: Service account keys securely stored in AWS Secrets Manager
 - **Monitoring**: CloudWatch integration with structured logging
 
@@ -525,19 +548,22 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 - ✅ **Percentage parsing**: Handles `'100%'` → `'1.000000'` conversion
 - ✅ **Customer field mapping**: Business="BB", Personal="99" validated
 - ✅ **CSV output format**: All values properly quoted with escaping
+- ✅ **Product code mapping**: research_id normalization, 3-character padding, error handling (`test_product_code_mapper.py`)
+- ✅ **Conversion integration**: End-to-end filtering and code conversion (`test_conversion_integration.py`)
 - ✅ **Production deployment**: Successfully processing 51 files, 11,730 records
 
 ### 📊 **Production Performance**
 The service is currently running successfully in production:
 1. Processes 51 Google Sheets files from Drive folder **concurrently**
 2. Completes processing in **20-30 seconds** (vs 157 seconds sequential)
-3. Generates 11,730 CSV records (2 per "Tag Level" row: Business + Personal)
-4. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
-5. Uploads matrix CSV to S3: `output-YYYYMMDD-HHMM/matrix_append.csv`
-6. Uploads product item CSV to S3: `output-YYYYMMDD-HHMM/product_item_append.csv` (deduplicated by item ID)
-7. Uploads static data files to S3: `output-YYYYMMDD-HHMM/product_group_append.csv`
-8. All values properly quoted: `"US1800000000"`, `"BB"`, `"1.000000"`, etc.
-9. Effective date configurable via `EFFECTIVE_DATE` environment variable
+3. **Product Code Conversion**: Converts hierarchical research_ids to 3-character item codes using mapping file
+4. Generates 11,730 CSV records (2 per "Tag Level" row: Business + Personal) with converted item codes
+5. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
+6. Uploads matrix CSV to S3: `output-YYYYMMDD-HHMM/matrix_update.csv`
+7. Uploads product item CSV to S3: `output-YYYYMMDD-HHMM/product_item_update.csv` (deduplicated by converted item ID)
+8. Uploads static data files to S3: `output-YYYYMMDD-HHMM/product_group_update.csv`
+9. All values properly quoted: `"US1800000000"`, `"7777"`, `"005"`, etc.
+10. Effective date configurable via `EFFECTIVE_DATE` environment variable
 
 ### 🚀 **Performance Benchmarks**
 - **Individual Sheet Processing**: 1-2 seconds (down from 3-4 seconds)
@@ -545,6 +571,7 @@ The service is currently running successfully in production:
 - **Concurrency Factor**: 5x parallel processing with thread pool executor
 - **API Efficiency**: 98% reduction in header mapping API calls
 - **Rate Limiting**: Optimized 20ms global intervals (down from 100ms per-instance)
+- **Product Code Conversion**: Efficient in-memory mapping with normalization and filtering
 - **CSV Generation**: Fixed escaping issues for reliable output formatting
 
 ---
@@ -567,6 +594,12 @@ The service is currently running successfully in production:
 - **Quote escaping**: Internal quotes are automatically escaped by doubling (`"` becomes `""`)
 - **Empty values**: Properly formatted as quoted empty strings (`""`)
 - **Effective date**: Set `EFFECTIVE_DATE` environment variable for custom dates
+
+**Product Code Conversion Issues:**
+- **Missing mapping file**: Ensure `mapping/product_code_mapping.csv` exists in S3 bucket
+- **Unmapped research_ids**: Check `errors.json` output file for `ExcludedUnmappedResearchIds` list
+- **Code padding**: Item codes are automatically padded to 3 characters with leading zeros
+- **Hierarchy normalization**: Trailing `.0` segments are removed for matching (e.g., "1.1.0.0" matches "1.1")
 
 **Logs Location:**
 - CloudWatch Log Group: `/aws/lambda/research-data-aggregation`

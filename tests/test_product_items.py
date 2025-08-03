@@ -7,7 +7,7 @@ def test_product_item_creation():
     """Test basic ProductItem creation and properties."""
     item = ProductItem("ITEM001", "Test Product Description")
     
-    assert item.group == "ZZZZ", "Group should always be ZZZZ"
+    assert item.group == "7777", "Group should always be 7777"
     assert item.item == "ITEM001", "Item ID should be preserved"
     assert item.description == "Test Product Description", "Description should be preserved"
     assert item.is_valid(), "Item with ID and description should be valid"
@@ -18,7 +18,7 @@ def test_product_item_csv_output():
     item = ProductItem("ITEM001", "Test Product")
     csv_row = item.to_csv_row()
     
-    expected = ['"ZZZZ"', '"ITEM001"', '"Test Product"']
+    expected = ['"7777"', '"ITEM001"', '"Test Product"']
     assert csv_row == expected, f"CSV row should match expected format: {csv_row}"
 
 

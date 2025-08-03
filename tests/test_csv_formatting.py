@@ -26,7 +26,7 @@ def test_csv_formatting():
     record = Record(
         geocode="US1800000000",  # Illinois
         tax_auth_id="",
-        group="ZZZZ",
+        group="7777",
         item="1.2.3.4.5.6.7.8",
         customer=CustomerType.BUSINESS.value,
         provider="99",
@@ -94,7 +94,7 @@ def test_empty_values():
     record = Record(
         geocode="US0600000000",
         tax_auth_id="",
-        group="ZZZZ",
+        group="7777",
         item="",
         customer=CustomerType.PERSONAL.value,
         provider="99",

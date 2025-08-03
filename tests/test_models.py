@@ -12,7 +12,7 @@ def test_record_creation():
     record = Record(
         geocode="US0600000000",
         tax_auth_id="001",
-        group="ZZZZ",
+        group="7777",
         item="1.1.1.1.0.0.0.0",
         customer=CustomerType.BUSINESS.value,
         provider="99",
@@ -35,7 +35,7 @@ def test_record_csv_output():
     record = Record(
         geocode="US0100000000",
         tax_auth_id="",
-        group="ZZZZ",
+        group="7777",
         item="1.1.1.1.0.0.0.0",
         customer=CustomerType.PERSONAL.value,
         provider="99",
@@ -52,7 +52,7 @@ def test_record_csv_output():
     expected = [
         '"US0100000000"',  # geocode
         '""',              # tax_auth_id
-        '"ZZZZ"',          # group
+        '"7777"',          # group
         '"1.1.1.1.0.0.0.0"', # item
         '"99"',            # customer
         '"99"',            # provider
