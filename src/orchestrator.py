@@ -254,6 +254,138 @@ class ResearchDataOrchestrator:
             if not result['success']:
                 logger.error(f"Error: Processing {result['file_name']}: {result.get('error', 'Unknown error')}")
     
+    def _identify_city_records(self, records: List[Record]) -> List[Record]:
+        """Identify records with city-level geocodes (not ending in '00000000')."""
+        city_records = []
+        for record in records:
+            if not record.geocode.endswith("00000000"):
+                city_records.append(record)
+        
+        logger.debug(f"Identified {len(city_records)} city-level records out of {len(records)} total records")
+        return city_records
+    
+    def _find_matching_state_treatments(self, city_record: Record, all_records: List[Record]) -> List[Record]:
+        """Find state records with same group/item/customer/provider but NOT exact tax_type+tax_cat composite key match."""
+        # Construct parent state geocode from city geocode
+        parent_geocode = self.lookup_tables._construct_parent_geocode(city_record.geocode)
+        
+        matching_records = []
+        for record in all_records:
+            # Check if this is a state record for the parent geocode
+            if record.geocode != parent_geocode:
+                continue
+            
+            # Check if core fields match
+            if (record.group == city_record.group and 
+                record.item == city_record.item and
+                record.customer == city_record.customer and
+                record.provider == city_record.provider):
+                
+                # Exclude only exact composite key matches (both tax_type AND tax_cat match)
+                if not (record.tax_type == city_record.tax_type and record.tax_cat == city_record.tax_cat):
+                    matching_records.append(record)
+        
+        logger.debug(f"Found {len(matching_records)} matching state treatments for city record {city_record.item} (geocode: {city_record.geocode})")
+        return matching_records
+    
+    def _create_city_treatment_record(self, state_record: Record, city_geocode: str) -> Record:
+        """Clone state record but replace geocode with city geocode."""
+        return Record(
+            geocode=city_geocode,  # Replace with city geocode
+            tax_auth_id=state_record.tax_auth_id,
+            group=state_record.group,
+            item=state_record.item,
+            customer=state_record.customer,
+            provider=state_record.provider,
+            transaction=state_record.transaction,
+            taxable=state_record.taxable,
+            tax_type=state_record.tax_type,
+            tax_cat=state_record.tax_cat,
+            effective=state_record.effective,
+            per_taxable_type=state_record.per_taxable_type,
+            percent_taxable=state_record.percent_taxable
+        )
+    
+    def _group_missing_treatments_by_city(self, missing_treatments: List[tuple]) -> Dict[str, List[Record]]:
+        """Group city records without matching state treatments for error reporting."""
+        grouped = {}
+        for city_geocode, city_record in missing_treatments:
+            if city_geocode not in grouped:
+                grouped[city_geocode] = []
+            grouped[city_geocode].append(city_record)
+        return grouped
+    
+    def _replicate_state_tax_treatments_to_cities(self, all_records: List[Record]) -> tuple:
+        """
+        Replicate applicable state-level tax treatments to city-level geocodes.
+        
+        Returns:
+            Tuple of (enhanced_records_list, error_messages_for_cities_without_matches)
+        """
+        logger.info("Starting state-level tax treatment replication to cities")
+        
+        # Step 1: Identify city records
+        city_records = self._identify_city_records(all_records)
+        if not city_records:
+            logger.info("No city-level records found, skipping state treatment replication")
+            return all_records, []
+        
+        logger.info(f"Replicating state treatments for {len(city_records)} city records")
+        
+        # Step 2: For each city record, find and replicate matching state treatments
+        replicated_records = []
+        missing_treatments = []  # Track cities without any matching state treatments
+        
+        for city_record in city_records:
+            matching_state_records = self._find_matching_state_treatments(city_record, all_records)
+            
+            if matching_state_records:
+                # Replicate each matching state treatment to the city geocode
+                for state_record in matching_state_records:
+                    city_treatment_record = self._create_city_treatment_record(state_record, city_record.geocode)
+                    replicated_records.append(city_treatment_record)
+                
+                logger.debug(f"Replicated {len(matching_state_records)} state treatments for city record {city_record.item} (geocode: {city_record.geocode})")
+            else:
+                # Track city records without matching state treatments
+                missing_treatments.append((city_record.geocode, city_record))
+        
+        # Step 3: Combine original records with replicated ones
+        enhanced_records = all_records + replicated_records
+        
+        # Step 4: Generate error messages for cities without matching treatments
+        error_messages = []
+        if missing_treatments:
+            grouped_missing = self._group_missing_treatments_by_city(missing_treatments)
+            
+            for city_geocode, affected_records in grouped_missing.items():
+                # Extract parent geocode for error message
+                parent_geocode = self.lookup_tables._construct_parent_geocode(city_geocode)
+                
+                # Summarize affected records
+                unique_groups = {r.group for r in affected_records}
+                unique_items = {r.item for r in affected_records}
+                unique_customers = {r.customer for r in affected_records}
+                
+                # Create sample lists (limit for readability)
+                sample_items = list(unique_items)[:10]
+                item_text = ", ".join(sample_items)
+                if len(unique_items) > 10:
+                    item_text += f" ... and {len(unique_items) - 10} more"
+                
+                error_message = (
+                    f"City geocode '{city_geocode}' has {len(affected_records)} records but no matching "
+                    f"state-level tax treatments found for parent geocode '{parent_geocode}'. "
+                    f"Affected records: groups={list(unique_groups)}, items=[{item_text}], "
+                    f"customers={list(unique_customers)}"
+                )
+                error_messages.append(error_message)
+        
+        logger.info(f"State treatment replication complete: added {len(replicated_records)} replicated records, "
+                   f"{len(missing_treatments)} city records without matching treatments")
+        
+        return enhanced_records, error_messages
+    
     async def process_all_sheets(self) -> Dict[str, Any]:
         """
         Main processing function that orchestrates the entire workflow.
@@ -322,6 +454,20 @@ class ResearchDataOrchestrator:
             if failed_results:
                 self._log_processing_errors(failed_results)
             
+            # Step 4.5: Replicate state treatments to cities
+            city_treatment_errors = []
+            if all_records:
+                logger.info("Replicating state-level tax treatments to city-level geocodes")
+                enhanced_records, city_treatment_error_messages = self._replicate_state_tax_treatments_to_cities(all_records)
+                all_records = enhanced_records
+                
+                # Add city treatment errors to processing errors for inclusion in errors.json
+                for error_msg in city_treatment_error_messages:
+                    city_treatment_errors.append({
+                        "error_type": "CityTreatmentReplicationError",
+                        "error_message": error_msg
+                    })
+            
             # Step 5: Filter unmapped research_ids and generate matrix CSV
             csv_key = None
             if all_records:
@@ -381,6 +527,10 @@ class ResearchDataOrchestrator:
             # Add data quality errors
             for processing_error in all_processing_errors:
                 all_errors.append(processing_error.to_dict())
+            
+            # Add city treatment replication errors
+            for city_error in city_treatment_errors:
+                all_errors.append(city_error)
             
             # Add unmapped research_id errors (records excluded from output)
             unmapped_ids = self.lookup_tables.product_code_mapper.get_unmapped_ids()

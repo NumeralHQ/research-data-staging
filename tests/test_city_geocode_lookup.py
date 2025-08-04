@@ -132,47 +132,54 @@ US22033A0020,LA,EAST BATON ROUGE,BATON ROUGE,,CITY'''
         assert geocodes == []
     
     def test_get_geocodes_for_location_state_priority(self, lookup_tables):
-        """Test that state lookup has priority over city lookup."""
-        # If a filename could match both state and city, state should win
-        # This tests the fallback logic order: state first, then city
-        
-        # "Illinois" should match the state, not fall through to city lookup
-        geocodes = lookup_tables.get_geocodes_for_location("Illinois Research File")
+        """Test that state lookup has priority over city lookup with exact pattern matching."""
+        # State should match when using exact standard pattern
+        geocodes = lookup_tables.get_geocodes_for_location("Illinois Sales Tax Research")
         assert geocodes == ["US1700000000"]  # State-level geocode
+        
+        # Non-standard pattern should return empty (no fallback)
+        geocodes = lookup_tables.get_geocodes_for_location("Illinois Research File")
+        assert geocodes == []  # No match without exact pattern
     
     def test_case_insensitive_city_matching(self, lookup_tables):
-        """Test that city name matching is case insensitive."""
-        # Test various case combinations
-        geocodes = lookup_tables.get_geocodes_for_location("chicago sales tax research")
+        """Test that city name matching is case insensitive with exact pattern."""
+        # Test various case combinations using exact pattern
+        geocodes = lookup_tables.get_geocodes_for_location("Chicago Sales Tax Research")
         expected_chicago = {"US17031A0003", "US17031A0047", "US17043A0053"}
         assert set(geocodes) == expected_chicago
         
         geocodes = lookup_tables.get_geocodes_for_location("DENVER Sales Tax Research")
         assert geocodes == ["US08031A0002"]
         
-        geocodes = lookup_tables.get_geocodes_for_location("Boulder SALES TAX research")
+        geocodes = lookup_tables.get_geocodes_for_location("Boulder Sales Tax Research")
         assert geocodes == ["US08013A0025"]
     
     def test_city_name_with_spaces(self, lookup_tables):
-        """Test city names with spaces like 'BATON ROUGE'."""
+        """Test city names with spaces like 'BATON ROUGE' using exact pattern."""
         geocodes = lookup_tables.get_geocodes_for_location("Baton Rouge Sales Tax Research")
         expected_baton_rouge = {"US22033A0009", "US22033A0020"}
         assert set(geocodes) == expected_baton_rouge
         
-        # Test case variations
+        # Non-standard pattern should return empty (no fallback)
         geocodes = lookup_tables.get_geocodes_for_location("BATON ROUGE research file")
-        assert set(geocodes) == expected_baton_rouge
+        assert geocodes == []  # No match without exact pattern
     
-    def test_partial_city_name_matching(self, lookup_tables):
-        """Test that partial city names in filenames are matched correctly."""
-        # "Chicago" should be found in "Chicago Sales Tax Research"
-        geocodes = lookup_tables.get_geocodes_for_location("Chicago Sales Tax Research 2024")
+    def test_strict_pattern_matching(self, lookup_tables):
+        """Test that only exact standard patterns match, no partial or substring matching."""
+        # Standard pattern works
+        geocodes = lookup_tables.get_geocodes_for_location("Chicago Sales Tax Research")
         expected_chicago = {"US17031A0003", "US17031A0047", "US17043A0053"}
         assert set(geocodes) == expected_chicago
         
-        # Should also work with city name in middle of filename
+        # Non-standard patterns should return empty (strict matching only)
+        geocodes = lookup_tables.get_geocodes_for_location("Chicago Sales Tax Research 2024")
+        assert geocodes == []  # Extra text after pattern
+        
         geocodes = lookup_tables.get_geocodes_for_location("Sales Tax Denver Research Q1")
-        assert geocodes == ["US08031A0002"]
+        assert geocodes == []  # Wrong word order
+        
+        geocodes = lookup_tables.get_geocodes_for_location("Denver Tax Research")
+        assert geocodes == []  # Missing "Sales"
     
     def test_empty_filename(self, lookup_tables):
         """Test handling of empty or None filenames."""

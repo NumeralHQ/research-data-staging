@@ -387,20 +387,58 @@ class LookupTables:
             }
         return self._state_name_to_code
     
+    def _extract_jurisdiction_name(self, filename: str) -> str:
+        """
+        Extract jurisdiction name from filename using the naming convention:
+        '{jurisdiction name} Sales Tax Research'
+        
+        Args:
+            filename: Google Sheets filename
+            
+        Returns:
+            Extracted jurisdiction name in uppercase, or None if pattern not found
+        """
+        filename_upper = filename.upper().strip()
+        
+        # Look for the pattern "SALES TAX RESEARCH" at the end (with optional whitespace)
+        pattern = "SALES TAX RESEARCH"
+        if filename_upper.endswith(pattern) or filename_upper.endswith(pattern + " "):
+            # Extract everything before "SALES TAX RESEARCH" 
+            parts = filename_upper.split(pattern)
+            if len(parts) >= 2:
+                # Check that there's nothing significant after the pattern (only whitespace allowed)
+                after_pattern = parts[1].strip()
+                if after_pattern == "":
+                    jurisdiction_name = parts[0].strip()
+                    if jurisdiction_name:  # Make sure we extracted a non-empty jurisdiction name
+                        logger.debug(f"Extracted jurisdiction name '{jurisdiction_name}' from filename '{filename}' using standard pattern")
+                        return jurisdiction_name
+        
+        # If pattern not found or doesn't meet strict requirements, return None
+        logger.debug(f"Filename '{filename}' doesn't follow exact standard pattern, cannot extract jurisdiction name")
+        return None
+    
     def get_geocode_for_filename(self, filename: str) -> Optional[str]:
-        """Extract geocode from filename by finding state name."""
-        filename_upper = filename.upper()
+        """Extract geocode from filename using exact state name matching only."""
+        # Extract jurisdiction name from standard pattern
+        jurisdiction_name = self._extract_jurisdiction_name(filename)
+        
+        if not jurisdiction_name:
+            # No standard pattern found, no state match possible
+            logger.debug(f"No standard pattern found in filename '{filename}', cannot match state")
+            return None
+        
         state_map = self.get_state_name_to_code_map()
         geocode_map = self.geocode_lookup
         
-        # Sort states by length (longest first) to prioritize more specific matches
-        # This ensures "WEST VIRGINIA" is checked before "VIRGINIA"
-        sorted_states = sorted(state_map.items(), key=lambda x: len(x[0]), reverse=True)
-        
-        for state_name, state_code in sorted_states:
-            if state_name in filename_upper:
+        # Exact match against state names only
+        for state_name, state_code in state_map.items():
+            if jurisdiction_name == state_name:
+                logger.debug(f"Exact state match: '{jurisdiction_name}' → {state_code}")
                 return geocode_map.get(state_code)
         
+        # No exact state match found
+        logger.debug(f"No exact state match found for jurisdiction '{jurisdiction_name}'")
         return None
     
     def get_geocode_for_state(self, state_name: str) -> Optional[str]:
@@ -440,33 +478,45 @@ class LookupTables:
     
     def get_geocodes_for_location(self, filename: str) -> List[str]:
         """
-        Extract location geocodes from filename with state→city fallback.
+        Extract location geocodes from filename using strict exact matching only.
         
         Args:
             filename: Research file name to extract location from
             
         Returns:
             List of geocodes (single item for states, potentially multiple for cities)
+            Empty list if no exact match found (will trigger error logging)
         """
-        # Step 1: Try existing state lookup logic
-        state_geocode = self.get_geocode_for_filename(filename)
-        if state_geocode:
-            logger.debug(f"Found state geocode for '{filename}': {state_geocode}")
-            return [state_geocode]
+        # Extract jurisdiction name from filename using standard pattern
+        jurisdiction_name = self._extract_jurisdiction_name(filename)
         
-        # Step 2: Try city lookup
-        filename_upper = filename.upper()
+        if not jurisdiction_name:
+            # No standard pattern found, cannot match any jurisdiction
+            logger.debug(f"No standard pattern found in filename '{filename}', cannot match any jurisdiction")
+            return []
+        
+        # STRICT EXACT MATCHING: Use extracted jurisdiction name for precise matching only
+        state_map = self.get_state_name_to_code_map()
+        geocode_map = self.geocode_lookup
         city_lookup = self.city_geocode_lookup
         
-        # Extract potential city name from filename (same logic as state extraction)
+        # Step 1: Try exact state match
+        for state_name, state_code in state_map.items():
+            if jurisdiction_name == state_name:
+                state_geocode = geocode_map.get(state_code)
+                if state_geocode:
+                    logger.debug(f"Exact state match: '{jurisdiction_name}' → {state_code} → {state_geocode}")
+                    return [state_geocode]
+        
+        # Step 2: Try exact city match
         for city_name in city_lookup.keys():
-            if city_name in filename_upper:
+            if jurisdiction_name == city_name:
                 geocodes = city_lookup[city_name]
-                logger.debug(f"Found city geocodes for '{filename}' (city: {city_name}): {geocodes}")
+                logger.debug(f"Exact city match: '{jurisdiction_name}' → {geocodes}")
                 return geocodes
         
-        # Step 3: No match found
-        logger.debug(f"No geocodes found for filename: '{filename}'")
+        # Step 3: No exact match found - return empty list to trigger error logging
+        logger.debug(f"No exact match found for jurisdiction '{jurisdiction_name}' from filename '{filename}'")
         return []
     
     def _construct_parent_geocode(self, geocode: str) -> str:
@@ -481,8 +531,8 @@ class LookupTables:
             return padded_prefix + "00000000"
     
     def get_tax_types_with_hierarchy_fallback(self, geocode: str, tax_cat: str) -> Optional[List[str]]:
-        """Get tax types with parent geocode fallback for cities (exclusive OR logic)."""
-        # Step 1: Try direct lookup with city geocode - if found, return ONLY these
+        """Get tax types with direct lookup only (no parent geocode fallback)."""
+        # Step 1: Try direct lookup with geocode only - if found, return these
         geocode_upper = geocode.upper().strip()
         tax_cat_upper = tax_cat.upper().strip()
         
@@ -501,26 +551,8 @@ class LookupTables:
                 logger.debug(f"Case-insensitive tax type lookup succeeded for geocode='{geocode}', tax_cat='{tax_cat}': {lookup_tax_types}")
                 return lookup_tax_types
         
-        # Step 2: If no match, try parent state geocode - if found, return ONLY these
-        parent_geocode = self._construct_parent_geocode(geocode_upper)  # Use the already-normalized geocode
-        if parent_geocode != geocode_upper:  # Only try parent if it's different
-            parent_geocode_upper = parent_geocode.upper().strip()
-            parent_key = (parent_geocode_upper, tax_cat_upper)
-            parent_tax_types = self.tax_type_lookup.get(parent_key)
-            
-            if parent_tax_types and len(parent_tax_types) > 0:
-                logger.debug(f"Parent tax type lookup succeeded for geocode='{geocode}' (parent: {parent_geocode}), tax_cat='{tax_cat}': {parent_tax_types}")
-                return parent_tax_types
-            
-            # Try case variations for parent
-            for (lookup_geocode, lookup_tax_cat), lookup_tax_types in self.tax_type_lookup.items():
-                if (lookup_geocode.upper() == parent_geocode_upper and 
-                    lookup_tax_cat.upper() == tax_cat_upper):
-                    logger.debug(f"Case-insensitive parent tax type lookup succeeded for geocode='{geocode}' (parent: {parent_geocode}), tax_cat='{tax_cat}': {lookup_tax_types}")
-                    return lookup_tax_types
-        
-        # Step 3: If still no match, return None (caller should exclude this geocode and log error)
-        logger.debug(f"No tax types found for geocode='{geocode}', tax_cat='{tax_cat}' - will be excluded from output")
+        # Step 2: If no direct match found, return None (no parent fallback)
+        logger.debug(f"No direct tax types found for geocode='{geocode}', tax_cat='{tax_cat}' - will be excluded from output")
         return None
     
     async def initialize_product_code_mapper(self) -> None:

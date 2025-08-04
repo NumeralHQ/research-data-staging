@@ -158,7 +158,7 @@ class RowMapper:
                 # Track this issue for summarization
                 self._track_missing_tax_type_issue(filename, record.geocode, record.tax_cat, record.item)
                 # Log as warning for immediate CloudWatch visibility
-                logger.warning(f"No tax types found for geocode='{record.geocode}', tax_cat='{record.tax_cat}' - excluding record {record.item} from output")
+                logger.warning(f"No direct tax types found for geocode='{record.geocode}', tax_cat='{record.tax_cat}' - excluding record {record.item} from output")
                 continue
                 
             # Create one copy of this record for each applicable tax_type

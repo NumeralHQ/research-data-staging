@@ -239,23 +239,20 @@ US17043A0053,01,47'''
         
         assert all(count == 2 for count in geocode_counts.values())
     
-    def test_tax_type_hierarchy_fallback_in_processing(self, row_mapper, sample_header_map, sample_row_data, mock_config):
-        """Test that tax type hierarchy fallback works during record processing."""
-        # Denver has no direct tax_type entries, should fall back to Colorado state tax_types
+    def test_tax_type_no_fallback_exclusion(self, row_mapper, sample_header_map, sample_row_data, mock_config):
+        """Test that records are excluded when city has no direct tax types (no fallback)."""
+        # Denver has no direct tax_type entries, should be excluded (no fallback to Colorado state)
         rows = [sample_row_data]
         records, error, processing_errors = row_mapper.process_sheet_rows(
             rows, sample_header_map, "Denver Sales Tax Research", mock_config
         )
         
         assert error is None
-        assert len(records) > 0
+        # Should have no records due to exclusion (no direct tax types, no fallback)
+        assert len(records) == 0
         
-        # Denver should fall back to Colorado state tax_types: ["01", "03"]
-        tax_types = {record.tax_type for record in records}
-        assert tax_types == {"01", "03"}
-        
-        # Should have 2 records (1 template × 1 geocode × 2 tax_types)
-        assert len(records) == 2
+        # Should have processing errors for the excluded records
+        assert len(processing_errors) > 0
     
     def test_no_geocode_match_error(self, row_mapper, sample_header_map, sample_row_data, mock_config):
         """Test error handling when no geocodes are found for filename."""

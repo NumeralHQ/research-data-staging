@@ -93,12 +93,12 @@ US17031A0047,01,47'''
         # Should NOT fall back to parent state even though parent has different tax types
         # (Parent US0800000000 has ["01", "02", "03"] but we should use ONLY city types)
     
-    def test_parent_fallback_success(self, lookup_tables):
-        """Test fallback to parent state geocode when city has no direct match."""
-        # US17031A0003 (Chicago, IL) has NO direct entries, should fall back to IL state
-        # Parent US1700000000 has ["01", "02", "47"]
+    def test_no_fallback_returns_none(self, lookup_tables):
+        """Test that no fallback occurs when city has no direct match - returns None instead."""
+        # US17031A0003 (Chicago, IL) has NO direct entries, should return None (no fallback)
+        # Parent US1700000000 has ["01", "02", "47"] but fallback is disabled
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US17031A0003", "01")
-        assert tax_types == ["01", "02", "47"]  # Should return parent state tax types
+        assert tax_types is None  # Should return None (no fallback to parent)
     
     def test_no_match_returns_none(self, lookup_tables):
         """Test that no match in both city and parent returns None."""
@@ -133,18 +133,15 @@ US17031A0047,01,47'''
         assert "02" not in tax_types  # Should NOT include parent tax types
         assert "03" not in tax_types  # Should NOT include parent tax types
         
-        # When city has no match, should return ONLY parent results
+        # When city has no match, should return None (no fallback)
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US17031A0003", "01")
-        assert tax_types == ["01", "02", "47"]  # ONLY parent results
+        assert tax_types is None  # No fallback to parent results
     
     def test_tax_type_sorting(self, lookup_tables):
         """Test that tax types are returned in sorted order."""
         # Tax types should be sorted for consistent ordering
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US08013A0025", "01")
         assert tax_types == ["01", "04"]  # Should be sorted
-        
-        tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US17031A0003", "01") 
-        assert tax_types == ["01", "02", "47"]  # Should be sorted
     
     def test_empty_geocode_and_tax_cat(self, lookup_tables):
         """Test handling of empty geocode and tax_cat values."""
@@ -161,25 +158,22 @@ US17031A0047,01,47'''
         """Test that whitespace is properly stripped in lookups."""
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback(" US08013A0025 ", " 01 ")
         assert tax_types == ["01", "04"]
-        
-        tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("\tUS17031A0003\n", "\t01\n")
-        assert tax_types == ["01", "02", "47"]
     
-    def test_multiple_fallback_scenarios(self, lookup_tables):
+    def test_multiple_lookup_scenarios(self, lookup_tables):
         """Test various geocode scenarios for comprehensive coverage."""
         # Scenario 1: City with direct match
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US08013A0025", "01")
         assert tax_types == ["01", "04"]
         
-        # Scenario 2: City without direct match, parent has match  
+        # Scenario 2: City without direct match (no fallback - returns None)
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US17031A0003", "01")
-        assert tax_types == ["01", "02", "47"]
+        assert tax_types is None
         
-        # Scenario 3: Neither city nor parent has match
+        # Scenario 3: City without direct match for unknown tax_cat
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US17031A0003", "99")
         assert tax_types is None
         
-        # Scenario 4: State-level geocode (no parent fallback needed)
+        # Scenario 4: State-level geocode (direct lookup)
         tax_types = lookup_tables.get_tax_types_with_hierarchy_fallback("US1700000000", "01")
         assert tax_types == ["01", "02", "47"]
     

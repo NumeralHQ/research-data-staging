@@ -156,7 +156,7 @@ The generated CSV will always emit columns in **this exact order**:
 
 ---
 
-## 6. Execution Flow (✅ OPTIMIZED WITH TRUE CONCURRENCY + CITY-LEVEL PROCESSING)
+## 6. Execution Flow (✅ OPTIMIZED WITH TRUE CONCURRENCY + ENHANCED CITY-LEVEL PROCESSING)
 1. **orchestrator.lambda_handler** is invoked.
 2. **Product Code Mapper Initialization**: Load `product_code_mapping.csv` from S3 for research_id conversion.
 3. List all files inside `DRIVE_FOLDER_ID` (mimeType = spreadsheet).
@@ -171,21 +171,26 @@ The generated CSV will always emit columns in **this exact order**:
    c. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
    d. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
    e. **Multi-Geocode Processing**: Generate records for ALL applicable geocodes (single for states, multiple for cities).
-7. `orchestrator` gathers all `Record`s and applies **Product Code Conversion**:
+7. **Direct Tax Type Lookup**: For each record, determine tax types using direct lookup only:
+   - Direct lookup: (geocode, tax_cat) → tax_types
+   - **No parent fallback**: Records with no direct tax types are excluded and logged as errors
+   - Ensures only explicitly defined city tax types are used
+8. `orchestrator` gathers all `Record`s and applies **State Treatment Replication**:
+   - **City Enhancement**: For each city record, find all applicable state treatments that don't conflict
+   - **Composite Key Filtering**: Exclude state treatments with exact tax_type+tax_cat match to city record
+   - **Record Expansion**: Clone non-conflicting state treatments with city geocode
+   - **Error Tracking**: Log cities without matching state treatments in `errors.json`
+9. **Product Code Conversion**: Apply to enhanced record set:
    - Converts research_ids to 3-character item codes using the mapping
    - Excludes records with unmapped research_ids from output
    - Tracks unmapped research_ids for error reporting
-8. **Hierarchical Tax Type Expansion**: For each record, determine tax types using hierarchy fallback:
-   - Direct lookup: (geocode, tax_cat) → tax_types
-   - Parent fallback: (parent_state_geocode, tax_cat) → tax_types (for cities)
-   - Exclusion: Records with no tax types are excluded and logged
-9. Streams converted records into a `csv.writer` **in the fixed column order**.
-10. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
-11. **Product Item Code Conversion**: Convert product item research_ids to 3-character codes and exclude unmapped items.
-12. **Deduplication**: Remove duplicate product items by converted Item ID, keeping first occurrence.
-13. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_update.csv` and `product_item_update.csv` (timestamp in America/Los_Angeles).
-14. Upload static data files from `src/data/` directory (e.g., `product_group_update.csv`) to the same output folder.
-15. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
+10. Streams converted records into a `csv.writer` **in the fixed column order**.
+11. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
+12. **Product Item Code Conversion**: Convert product item research_ids to 3-character codes and exclude unmapped items.
+13. **Deduplication**: Remove duplicate product items by converted Item ID, keeping first occurrence.
+14. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_update.csv` and `product_item_update.csv` (timestamp in America/Los_Angeles).
+15. Upload static data files from `src/data/` directory (e.g., `product_group_update.csv`) to the same output folder.
+16. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
 
@@ -224,12 +229,20 @@ See `mapper.py` for canonical reference.  Key features:
 - **Normalization**: All location names normalized to uppercase for consistent matching
 - `taxable` → mapping table `{Not Taxable|Nontaxable|Exempt:0, Taxable:1, "Drill Down":-1}`.
 
-**Hierarchical Tax Type Lookup**: Advanced tax type resolution for city-level processing
-- **Direct Lookup**: Try (city_geocode, tax_cat) first → return city-specific tax types if found
-- **Parent Fallback**: If no city match, construct parent state geocode (first 4 characters + "00000000") → try (parent_geocode, tax_cat)
-- **Exclusive OR Logic**: Use ONLY city tax types OR parent tax types, never combine both
-- **Error Handling**: If neither city nor parent has tax types, exclude record and log in errors.json
-- **Examples**: Denver (no direct tax types) falls back to Colorado state tax types; Chicago (has direct tax types) uses only Chicago-specific types
+**Direct Tax Type Lookup**: Simplified tax type resolution for city-level processing
+- **Direct Lookup Only**: Try (geocode, tax_cat) → return tax types if found
+- **No Parent Fallback**: Records with no direct tax types are excluded and logged as errors
+- **Error Handling**: If no direct tax types found, exclude record and log in errors.json
+- **State Treatment Replication**: Applicable state treatments are added to cities via post-processing
+- **Examples**: Chicago with direct tax types uses only Chicago-specific types; Denver without direct tax types gets records excluded but receives applicable Illinois state treatments via replication
+
+**State-Level Tax Treatment Replication**: Post-processing enhancement for comprehensive city coverage
+- **Purpose**: Ensures cities receive all applicable state-level tax treatments in addition to their city-specific treatments
+- **Matching Logic**: For each city record, find state records with same `group`, `item`, `customer`, `provider`
+- **Composite Key Exclusion**: Exclude state treatments with exact `tax_type` AND `tax_cat` match to avoid duplication
+- **Record Cloning**: Non-conflicting state treatments are cloned with city geocode replacing state geocode
+- **Error Tracking**: Cities without any matching state treatments are logged in `errors.json` with detailed breakdowns
+- **Example**: Chicago city record with `tax_type=47, tax_cat=01` receives additional Illinois state treatments with `tax_type=01, tax_cat=01` and `tax_type=02, tax_cat=01` but excludes any with `tax_type=47, tax_cat=01`
 
 **Business vs Personal Records:**
 - Each "Tag Level" row generates two CSV records:
@@ -357,8 +370,10 @@ python build.py --full
 - **`test_product_code_mapper.py`**: Unit tests for research_id to 3-character code conversion
 - **`test_conversion_integration.py`**: Integration tests for end-to-end product code conversion
 - **`test_city_geocode_lookup.py`**: Tests city geocode resolution and state→city fallback logic
-- **`test_tax_type_hierarchy.py`**: Tests hierarchical tax type lookup with parent fallback
+- **`test_tax_type_hierarchy.py`**: Tests direct tax type lookup (no parent fallback)
 - **`test_multi_geocode_processing.py`**: Tests end-to-end city file processing with multiple geocodes
+- **`test_state_treatment_replication.py`**: Unit tests for state treatment replication methods
+- **`test_city_tax_integration.py`**: Integration tests for enhanced city-level tax processing
 - **`test_config.env`**: Environment variables for local testing (can be sourced or copied to `.env`)
 
 **Test concurrency performance:**
@@ -641,16 +656,18 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 - ✅ **Product code mapping**: research_id normalization, 3-character padding, error handling (`test_product_code_mapper.py`)
 - ✅ **Conversion integration**: End-to-end filtering and code conversion (`test_conversion_integration.py`)
 - ✅ **City geocode resolution**: State→city fallback logic, multiple geocodes per city (`test_city_geocode_lookup.py`)
-- ✅ **Hierarchical tax type lookup**: City→parent state fallback, exclusive OR logic (`test_tax_type_hierarchy.py`)
+- ✅ **Direct tax type lookup**: No parent fallback, explicit city tax types only (`test_tax_type_hierarchy.py`)
 - ✅ **Multi-geocode processing**: End-to-end city file processing, record multiplication (`test_multi_geocode_processing.py`)
+- ✅ **State treatment replication**: Unit tests for city enhancement methods (`test_state_treatment_replication.py`)
+- ✅ **Enhanced city tax integration**: End-to-end city processing with state treatment replication (`test_city_tax_integration.py`)
 - ✅ **Production deployment**: Successfully processing state and city files with enhanced geocode resolution
 
 ### 📊 **Production Performance**
-The service is currently running successfully in production:
+The service is currently running successfully in production with enhanced city-level processing:
 1. Processes **state-level and city-level** Google Sheets files from Drive folder **concurrently**
 2. Completes processing in **20-30 seconds** (vs 157 seconds sequential) with enhanced geocode resolution
 3. **Enhanced Geocode Resolution**: Automatically detects and processes both state files (single geocode) and city files (multiple geocodes)
-4. **Hierarchical Tax Type Lookup**: City geocodes with fallback to parent state geocodes for complete tax type coverage
+4. **Enhanced Tax Type Processing**: Direct city tax type lookup with state treatment replication for comprehensive coverage
 5. **Product Code Conversion**: Converts hierarchical research_ids to 3-character item codes using mapping file
 6. Generates comprehensive CSV records with multi-geocode expansion for city files
 7. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
@@ -698,10 +715,16 @@ The service is currently running successfully in production:
 
 **City-Level Processing Issues:**
 - **Unknown city files**: Check `errors.json` for files that failed both state and city geocode lookup
-- **Missing tax types**: Records excluded when neither city nor parent state has tax types for the tax_cat
+- **Missing direct tax types**: Records excluded when city has no direct tax types in `unique_tax_type.csv` (NO parent fallback)
 - **City geocode data**: Ensure `mapping/geo_state.csv` contains city entries with proper normalization
-- **Parent fallback**: City geocodes fall back to parent state (first 4 characters + "00000000") for tax type lookup
+- **State treatment replication**: Cities receive applicable state treatments via post-processing for comprehensive coverage
 - **Record multiplication**: City files generate records for ALL applicable geocodes (expected behavior)
+
+**State Treatment Replication Issues:**
+- **No state treatments replicated**: Verify parent state has records with matching `group`, `item`, `customer`, `provider`
+- **Duplicate treatments**: Check for exact `tax_type` + `tax_cat` composite key matches being excluded correctly
+- **Performance impact**: Large state-to-city replication may increase processing time (<10% expected)
+- **Error aggregation**: Cities without matching treatments logged once per city in `errors.json`
 
 **Authentication & Access Issues:**
 - **Google Drive Permission Denied**: Ensure the Google Drive folder is shared with the service account email
