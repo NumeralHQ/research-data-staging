@@ -21,8 +21,8 @@ class TestTaxTypeExpansion:
         """Create mock lookup tables with tax type data."""
         lookup_tables = Mock(spec=LookupTables)
         lookup_tables.get_tax_cat_code = Mock(return_value="05")
-        # Mock different tax types for different geocodes
-        lookup_tables.get_tax_types_for_geocode_and_tax_cat = Mock(side_effect=lambda geocode, tax_cat: {
+        # Mock different tax types for different geocodes using the new hierarchy fallback method
+        lookup_tables.get_tax_types_with_hierarchy_fallback = Mock(side_effect=lambda geocode, tax_cat: {
             # Different tax types for different geocode+tax_cat combinations
             ("US0600000000", "05"): ["01", "02", "03", "04", "05"],  # 5 tax types for category 05 in California
             ("US0600000000", "03"): ["01", "02"],                    # 2 tax types for category 03 in California
@@ -82,7 +82,7 @@ class TestTaxTypeExpansion:
         
         # Expand by tax types
         expanded_records = row_mapper._expand_records_by_tax_types(
-            [business_record, personal_record], geocode
+            [business_record, personal_record], geocode, "test_file.xlsx"
         )
         
         # Should create 5 records (1 template × 5 tax types)
@@ -126,7 +126,7 @@ class TestTaxTypeExpansion:
         
         # Expand by tax types
         expanded_records = row_mapper._expand_records_by_tax_types(
-            [business_record, personal_record], geocode
+            [business_record, personal_record], geocode, "test_file.xlsx"
         )
         
         # Should create 4 records (2 templates × 2 tax types)
@@ -184,7 +184,7 @@ class TestTaxTypeExpansion:
         
         # Expand by tax types
         expanded_records = row_mapper._expand_records_by_tax_types(
-            [business_record, personal_record], geocode
+            [business_record, personal_record], geocode, "test_file.xlsx"
         )
         
         # Should create 1 record (1 template × 1 tax type)
@@ -232,8 +232,8 @@ class TestTaxTypeExpansion:
             ]
         ]
         
-        # Mock geocode lookup to return a geocode with 3 tax types
-        with patch.object(row_mapper.lookup_tables, 'get_geocode_for_filename', return_value="US0600000000"):
+        # Mock geocode lookup to return a list with geocode with 5 tax types
+        with patch.object(row_mapper.lookup_tables, 'get_geocodes_for_location', return_value=["US0600000000"]):
             records, error, processing_errors = row_mapper.process_sheet_rows(
                 rows, header_map, "Test File.xlsx", config
             )
@@ -324,7 +324,7 @@ class TestTaxTypeExpansion:
         
         # Expand by tax types
         expanded_records = row_mapper._expand_records_by_tax_types(
-            [business_record, personal_record], geocode
+            [business_record, personal_record], geocode, "test_file.xlsx"
         )
         
         # Should create no records
@@ -374,7 +374,7 @@ class TestTaxTypeExpansion:
         
         # Expand by tax types
         expanded_records = row_mapper._expand_records_by_tax_types(
-            [business_record, personal_record], geocode
+            [business_record, personal_record], geocode, "test_file.xlsx"
         )
         
         # Business record (tax_cat=05) should get 5 tax types: ["01", "02", "03", "04", "05"]

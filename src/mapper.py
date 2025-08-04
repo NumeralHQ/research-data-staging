@@ -32,16 +32,50 @@ class RowMapper:
         
         # Collect errors during processing
         self.processing_errors = []
+        
+        # Track missing tax type issues for summarization (per file)
+        # Structure: {filename: {(geocode, tax_cat): [list of record items]}}
+        self.missing_tax_type_issues = {}
     
     def _clear_errors(self):
         """Clear errors at the start of processing a new file."""
         self.processing_errors = []
+        self.missing_tax_type_issues = {}  # Also clear tax type issues
     
     def _add_error(self, filename: str, error_message: str, error_type: str = "DataQualityError"):
         """Add an error to the collection."""
         error = ProcessingError(filename, error_message, error_type)
         self.processing_errors.append(error)
         logger.error(f"Data quality error in {filename}: {error_message}")
+    
+    def _track_missing_tax_type_issue(self, filename: str, geocode: str, tax_cat: str, record_item: str):
+        """Track a missing tax type issue for later summarization."""
+        if filename not in self.missing_tax_type_issues:
+            self.missing_tax_type_issues[filename] = {}
+        
+        key = (geocode, tax_cat)
+        if key not in self.missing_tax_type_issues[filename]:
+            self.missing_tax_type_issues[filename][key] = []
+        
+        self.missing_tax_type_issues[filename][key].append(record_item)
+    
+    def _create_missing_tax_type_summary_errors(self):
+        """Create summarized errors for missing tax type issues."""
+        for filename, issues_by_key in self.missing_tax_type_issues.items():
+            for (geocode, tax_cat), affected_items in issues_by_key.items():
+                count = len(affected_items)
+                
+                # Create a sample of affected items (max 5 for readability)
+                sample_items = affected_items[:5]
+                sample_text = ", ".join(sample_items)
+                if count > 5:
+                    sample_text += f" ... and {count - 5} more"
+                
+                error_message = (f"No tax types found for geocode='{geocode}', tax_cat='{tax_cat}' - "
+                               f"excluded {count} records from output. "
+                               f"Affected items: {sample_text}")
+                
+                self._add_error(filename, error_message, "MissingTaxTypeError")
     
     def _get_cell_value(self, row: List[Any], index: Optional[int]) -> str:
         """Safely get cell value from row by index."""
@@ -106,7 +140,7 @@ class RowMapper:
         
         return code
     
-    def _expand_records_by_tax_types(self, records: List[Optional[Record]], geocode: str) -> List[Record]:
+    def _expand_records_by_tax_types(self, records: List[Optional[Record]], geocode: str, filename: str = "unknown_file") -> List[Record]:
         """Expand list of records by creating one copy per tax_type for each record's geocode+tax_cat combination."""
         if not records:
             return []
@@ -116,9 +150,17 @@ class RowMapper:
             if record is None:
                 continue
                 
-            # Get tax types specific to this record's geocode+tax_cat combination
-            tax_types = self.lookup_tables.get_tax_types_for_geocode_and_tax_cat(record.geocode, record.tax_cat)
+            # Get tax types specific to this record's geocode+tax_cat combination using hierarchy fallback
+            tax_types = self.lookup_tables.get_tax_types_with_hierarchy_fallback(record.geocode, record.tax_cat)
             
+            # If no tax types found (None returned), exclude this record and collect for summary
+            if tax_types is None:
+                # Track this issue for summarization
+                self._track_missing_tax_type_issue(filename, record.geocode, record.tax_cat, record.item)
+                # Log as warning for immediate CloudWatch visibility
+                logger.warning(f"No tax types found for geocode='{record.geocode}', tax_cat='{record.tax_cat}' - excluding record {record.item} from output")
+                continue
+                
             # Create one copy of this record for each applicable tax_type
             for tax_type in tax_types:
                 # Create a new record with the same data but different tax_type
@@ -139,7 +181,7 @@ class RowMapper:
                 )
                 expanded_records.append(expanded_record)
             
-            logger.debug(f"Expanded record {record.item} (customer={record.customer}, tax_cat={record.tax_cat}) into {len(tax_types)} records using tax types: {tax_types}")
+            logger.debug(f"Expanded record {record.item} (geocode={record.geocode}, customer={record.customer}, tax_cat={record.tax_cat}) into {len(tax_types)} records using tax types: {tax_types}")
         
         total_templates = len([r for r in records if r is not None])
         logger.debug(f"Expanded {total_templates} record templates into {len(expanded_records)} final records")
@@ -345,6 +387,53 @@ class RowMapper:
             logger.error(f"Error converting row to records: {e}")
             return None, None
     
+    def _process_rows_for_geocode(
+        self, 
+        rows: List[List[Any]], 
+        header_map: Dict[str, int], 
+        geocode: str,
+        config,
+        filename: str
+    ) -> List[Record]:
+        """Process all rows for a specific geocode (extracted from existing logic)."""
+        records = []
+        admin_index = header_map.get('admin')
+        
+        if admin_index is None:
+            logger.error(f"Admin column not found in header map for {filename}")
+            return records
+        
+        for row_idx, row in enumerate(rows, start=1):
+            try:
+                # Check if this row has the admin match value
+                admin_value = self._get_cell_value(row, admin_index)
+                
+                if admin_value.upper() != config.admin_filter_value.upper():
+                    continue  # Skip rows that don't match
+                
+                # Convert row to records (pass geocode as parameter)
+                business_record, personal_record = self.convert_row_to_records(
+                    row, header_map, geocode, config, filename
+                )
+                
+                # Expand records by tax_types for this geocode
+                expanded_records = self._expand_records_by_tax_types(
+                    [business_record, personal_record], geocode, filename
+                )
+                
+                # Add all expanded records
+                records.extend(expanded_records)
+                
+                if expanded_records:
+                    logger.debug(f"Processed row {row_idx} from {filename} (geocode: {geocode}) - created {len(expanded_records)} records")
+                
+            except Exception as e:
+                logger.error(f"Error processing row {row_idx} in {filename} for geocode {geocode}: {e}")
+                continue
+        
+        logger.debug(f"Processed {len(records)} records from {filename} for geocode {geocode}")
+        return records
+    
     def process_sheet_rows(
         self, 
         rows: List[List[Any]], 
@@ -367,48 +456,29 @@ class RowMapper:
         # Clear any existing errors for this file
         self._clear_errors()
         
-        # First, get geocode from filename (do this once per sheet)
-        geocode = self.lookup_tables.get_geocode_for_filename(filename)
-        if not geocode:
-            error_msg = f"Could not determine geocode for filename: {filename}"
+        # NEW: Get list of geocodes instead of single geocode
+        geocodes = self.lookup_tables.get_geocodes_for_location(filename)
+        if not geocodes:
+            error_msg = f"Could not determine geocode(s) for filename: {filename}"
             logger.error(error_msg)
             return [], error_msg, self.processing_errors
         
-        records = []
-        admin_index = header_map.get('admin')
+        # Log file classification
+        if len(geocodes) == 1 and geocodes[0].endswith("00000000"):
+            logger.info(f"Processing STATE-level file '{filename}' → geocode: {geocodes[0]}")
+        else:
+            logger.info(f"Processing CITY-level file '{filename}' → {len(geocodes)} geocodes: {geocodes}")
         
-        if admin_index is None:
-            error_msg = f"Admin column not found in header map for {filename}"
-            logger.error(error_msg)
-            return [], error_msg, self.processing_errors
+        # Process records for each geocode
+        all_records = []
+        for geocode in geocodes:
+            # Process rows for this specific geocode
+            geocode_records = self._process_rows_for_geocode(rows, header_map, geocode, config, filename)
+            all_records.extend(geocode_records)
         
-        for row_idx, row in enumerate(rows, start=1):
-            try:
-                # Check if this row has the admin match value
-                admin_value = self._get_cell_value(row, admin_index)
-                
-                if admin_value.upper() != config.admin_filter_value.upper():
-                    continue  # Skip rows that don't match
-                
-                # Convert row to records (pass geocode as parameter)
-                business_record, personal_record = self.convert_row_to_records(
-                    row, header_map, geocode, config, filename
-                )
-                
-                # Expand records by tax_types for this geocode
-                expanded_records = self._expand_records_by_tax_types(
-                    [business_record, personal_record], geocode
-                )
-                
-                # Add all expanded records
-                records.extend(expanded_records)
-                
-                if expanded_records:
-                    logger.debug(f"Processed row {row_idx} from {filename} - created {len(expanded_records)} records")
-                
-            except Exception as e:
-                logger.error(f"Error processing row {row_idx} in {filename}: {e}")
-                continue
+        logger.info(f"Processed {len(all_records)} total records from {filename} across {len(geocodes)} geocode(s)")
         
-        logger.info(f"Processed {len(records)} records from {filename}")
-        return records, None, self.processing_errors  # No error, return collected errors 
+        # Create summary errors for missing tax type issues before returning
+        self._create_missing_tax_type_summary_errors()
+        
+        return all_records, None, self.processing_errors 

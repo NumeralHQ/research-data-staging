@@ -1,7 +1,7 @@
 # Research Data Aggregation Service
 
 ## 1. Purpose
-Combine several state-specific Google Sheets into **one canonical CSV** and push it to an S3 bucket (`research-aggregation`).  The service runs inside an AWS Lambda, retrieves every sheet in a designated Google Drive folder, converts rows on the *Research* tab into the target tax schema, merges the output, and uploads the final file.
+Combine several **state-level and city-level** Google Sheets into **one canonical CSV** and push it to an S3 bucket (`research-aggregation`).  The service runs inside an AWS Lambda, retrieves every sheet in a designated Google Drive folder, converts rows on the *Research* tab into the target tax schema, merges the output, and uploads the final file.
 
 ---
 
@@ -156,7 +156,7 @@ The generated CSV will always emit columns in **this exact order**:
 
 ---
 
-## 6. Execution Flow (✅ OPTIMIZED WITH TRUE CONCURRENCY)
+## 6. Execution Flow (✅ OPTIMIZED WITH TRUE CONCURRENCY + CITY-LEVEL PROCESSING)
 1. **orchestrator.lambda_handler** is invoked.
 2. **Product Code Mapper Initialization**: Load `product_code_mapping.csv` from S3 for research_id conversion.
 3. List all files inside `DRIVE_FOLDER_ID` (mimeType = spreadsheet).
@@ -167,19 +167,25 @@ The generated CSV will always emit columns in **this exact order**:
    - **Semaphore Control**: Maintains concurrency limits while enabling parallel execution
 6. **worker.py** (for each sheet, using the shared header map):
    a. Pull sheet data via Sheets API (optimized to fetch only data rows).
-   b. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
-   c. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
+   b. **Enhanced Geocode Resolution**: Determine geocodes using hierarchical lookup (state → city fallback).
+   c. Filter rows where `ADMIN_COLUMN` value == `ADMIN_FILTER_VALUE`.
+   d. For each match create **two** `Record` objects (Business, Personal) using `mapper.py`.
+   e. **Multi-Geocode Processing**: Generate records for ALL applicable geocodes (single for states, multiple for cities).
 7. `orchestrator` gathers all `Record`s and applies **Product Code Conversion**:
    - Converts research_ids to 3-character item codes using the mapping
    - Excludes records with unmapped research_ids from output
    - Tracks unmapped research_ids for error reporting
-8. Streams converted records into a `csv.writer` **in the fixed column order**.
-9. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
-10. **Product Item Code Conversion**: Convert product item research_ids to 3-character codes and exclude unmapped items.
-11. **Deduplication**: Remove duplicate product items by converted Item ID, keeping first occurrence.
-12. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_update.csv` and `product_item_update.csv` (timestamp in America/Los_Angeles).
-13. Upload static data files from `src/data/` directory (e.g., `product_group_update.csv`) to the same output folder.
-14. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
+8. **Hierarchical Tax Type Expansion**: For each record, determine tax types using hierarchy fallback:
+   - Direct lookup: (geocode, tax_cat) → tax_types
+   - Parent fallback: (parent_state_geocode, tax_cat) → tax_types (for cities)
+   - Exclusion: Records with no tax types are excluded and logged
+9. Streams converted records into a `csv.writer` **in the fixed column order**.
+10. **Product Item Extraction**: Extract product items from rows with Admin="Tag Level", using Current ID (Column B) and item descriptions (Columns C:J with direct concatenation).
+11. **Product Item Code Conversion**: Convert product item research_ids to 3-character codes and exclude unmapped items.
+12. **Deduplication**: Remove duplicate product items by converted Item ID, keeping first occurrence.
+13. Create timestamped output folder `output-YYYYMMDD-HHMM` and upload both `matrix_update.csv` and `product_item_update.csv` (timestamp in America/Los_Angeles).
+14. Upload static data files from `src/data/` directory (e.g., `product_group_update.csv`) to the same output folder.
+15. If any sheets were skipped due to errors, dump their details to `errors.json` in the same folder; also `logger.error("Error: Processing {file}")` for CloudWatch alarm.
 
 ---
 
@@ -211,8 +217,19 @@ See `mapper.py` for canonical reference.  Key features:
 - **Code Padding**: Pads item codes to exactly 3 characters with leading zeros (e.g., "5" → "005", "22" → "022")
 - **Error Handling**: Unmapped research_ids are excluded from output files and tracked in `errors.json`
 
-**Geocode Lookup**: Extracts state name from filename, maps to 12-digit geocode
+**Enhanced Geocode Resolution**: Supports both state-level and city-level research files
+- **State Files**: Extract state name from filename → state code → single geocode (e.g., "Illinois Sales Tax Research" → "US1700000000")
+- **City Files**: Extract city name from filename → city lookup → multiple geocodes (e.g., "Chicago Sales Tax Research" → ["US17031A0003", "US17031A0047", "US17043A0053"])
+- **Fallback Logic**: Try state lookup first, if no match then try city lookup
+- **Normalization**: All location names normalized to uppercase for consistent matching
 - `taxable` → mapping table `{Not Taxable|Nontaxable|Exempt:0, Taxable:1, "Drill Down":-1}`.
+
+**Hierarchical Tax Type Lookup**: Advanced tax type resolution for city-level processing
+- **Direct Lookup**: Try (city_geocode, tax_cat) first → return city-specific tax types if found
+- **Parent Fallback**: If no city match, construct parent state geocode (first 4 characters + "00000000") → try (parent_geocode, tax_cat)
+- **Exclusive OR Logic**: Use ONLY city tax types OR parent tax types, never combine both
+- **Error Handling**: If neither city nor parent has tax types, exclude record and log in errors.json
+- **Examples**: Denver (no direct tax types) falls back to Colorado state tax types; Chicago (has direct tax types) uses only Chicago-specific types
 
 **Business vs Personal Records:**
 - Each "Tag Level" row generates two CSV records:
@@ -337,8 +354,11 @@ python build.py --full
 - **`test_models.py`**: Tests Record model creation, validation, and CSV output formatting
 - **`test_geocode.py`**: Tests geocode lookup from filenames using local mapping files
 - **`test_concurrent_fix.py`**: Validates thread pool executor enables true concurrent processing
-- **`test_product_code_mapper.py`**: **NEW** - Unit tests for research_id to 3-character code conversion
-- **`test_conversion_integration.py`**: **NEW** - Integration tests for end-to-end product code conversion
+- **`test_product_code_mapper.py`**: Unit tests for research_id to 3-character code conversion
+- **`test_conversion_integration.py`**: Integration tests for end-to-end product code conversion
+- **`test_city_geocode_lookup.py`**: Tests city geocode resolution and state→city fallback logic
+- **`test_tax_type_hierarchy.py`**: Tests hierarchical tax type lookup with parent fallback
+- **`test_multi_geocode_processing.py`**: Tests end-to-end city file processing with multiple geocodes
 - **`test_config.env`**: Environment variables for local testing (can be sourced or copied to `.env`)
 
 **Test concurrency performance:**
@@ -376,12 +396,63 @@ pytest tests/test_concurrent_fix.py::test_thread_pool_enables_true_concurrency -
 ---
 
 ## 11. Security Features (✅ ENHANCED)
+
+### **Current Implementation:**
 - **Google Service Account Keys** stored securely in AWS Secrets Manager (never in code or environment variables)
 - **S3 bucket** with encryption at rest and public access blocked
 - **IAM roles** with least-privilege policies
 - **TLS 1.2** enforced for all Google API calls
 - **Input validation** and data sanitization throughout
 - **Thread-safe operations** with proper async locks and synchronization
+
+### **🔐 Alternative: Workload Identity Federation (Advanced)**
+
+For enhanced security, you can eliminate service account keys entirely using Workload Identity Federation:
+
+**Benefits:**
+- ✅ **No service account keys** to store or manage
+- ✅ **Automatic credential rotation** through AWS identity
+- ✅ **Enhanced audit trail** in both AWS CloudTrail and Google Cloud
+- ✅ **Least privilege access** with role-based permissions
+
+**Setup Overview:**
+1. **Google Cloud Setup:**
+   ```bash
+   # Create workload identity pool and provider
+   gcloud iam workload-identity-pools create aws-lambda-pool --location=global
+   gcloud iam workload-identity-pools providers create-aws aws-lambda-provider \
+     --location=global --workload-identity-pool=aws-lambda-pool \
+     --account-id=YOUR_AWS_ACCOUNT_ID
+   ```
+
+2. **Service Account Configuration:**
+   ```bash
+   # Create service account with minimal permissions
+   gcloud iam service-accounts create research-data-service
+   gcloud projects add-iam-policy-binding PROJECT_ID \
+     --member="serviceAccount:research-data-service@PROJECT_ID.iam.gserviceaccount.com" \
+     --role="roles/drive.readonly"
+   ```
+
+3. **AWS Lambda Integration:**
+   - Configure Lambda environment variables with workload identity audience
+   - Update authentication code to use AWS credentials for Google API access
+   - No changes to existing business logic required
+
+4. **Verification:**
+   ```bash
+   # Test the setup
+   aws lambda invoke --function-name research-data-aggregation response.json
+   ```
+
+**Security Comparison:**
+| Method | Service Account Keys | Workload Identity Federation |
+|--------|---------------------|------------------------------|
+| **Credential Storage** | AWS Secrets Manager | No credentials stored |
+| **Rotation** | Manual | Automatic via AWS |
+| **Audit Trail** | AWS CloudTrail only | AWS + Google Cloud |
+| **Setup Complexity** | Simple | Advanced |
+| **Security Risk** | Low (encrypted keys) | Minimal (no keys) |
 
 ---
 
@@ -455,9 +526,28 @@ python build.py --help
 
 ### **🚀 Interactive Mode** (default):
    - Enhanced menu with all build and deployment options
-   - MFA-enabled AWS operations
-   - Guided deployment process
+   - MFA-enabled AWS operations with automatic session management
+   - Guided deployment process with clear status messages
    - Use for: Full-featured interactive experience
+
+### **🔐 MFA Authentication Experience:**
+When MFA is required, the system provides guided authentication:
+```
+🔐 MFA RE-AUTHENTICATION REQUIRED
+============================================================
+Your AWS session has expired or MFA is required.
+Please follow these steps to re-authenticate:
+
+📱 MFA Device: arn:aws:iam::ACCOUNT_ID:mfa/Device-Name
+
+1. Open your MFA app (Google Authenticator, Authy, etc.)
+2. Get the current 6-digit code
+3. Enter it below
+
+Enter MFA code (6 digits): 123456
+✅ MFA authentication successful!
+🕐 Session valid until: 2025-08-03 22:59:17+00:00
+```
 
 **Recommended Development Workflows:**
 
@@ -550,20 +640,25 @@ aws logs tail /aws/lambda/research-data-aggregation --follow
 - ✅ **CSV output format**: All values properly quoted with escaping
 - ✅ **Product code mapping**: research_id normalization, 3-character padding, error handling (`test_product_code_mapper.py`)
 - ✅ **Conversion integration**: End-to-end filtering and code conversion (`test_conversion_integration.py`)
-- ✅ **Production deployment**: Successfully processing 51 files, 11,730 records
+- ✅ **City geocode resolution**: State→city fallback logic, multiple geocodes per city (`test_city_geocode_lookup.py`)
+- ✅ **Hierarchical tax type lookup**: City→parent state fallback, exclusive OR logic (`test_tax_type_hierarchy.py`)
+- ✅ **Multi-geocode processing**: End-to-end city file processing, record multiplication (`test_multi_geocode_processing.py`)
+- ✅ **Production deployment**: Successfully processing state and city files with enhanced geocode resolution
 
 ### 📊 **Production Performance**
 The service is currently running successfully in production:
-1. Processes 51 Google Sheets files from Drive folder **concurrently**
-2. Completes processing in **20-30 seconds** (vs 157 seconds sequential)
-3. **Product Code Conversion**: Converts hierarchical research_ids to 3-character item codes using mapping file
-4. Generates 11,730 CSV records (2 per "Tag Level" row: Business + Personal) with converted item codes
-5. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
-6. Uploads matrix CSV to S3: `output-YYYYMMDD-HHMM/matrix_update.csv`
-7. Uploads product item CSV to S3: `output-YYYYMMDD-HHMM/product_item_update.csv` (deduplicated by converted item ID)
-8. Uploads static data files to S3: `output-YYYYMMDD-HHMM/product_group_update.csv`
-9. All values properly quoted: `"US1800000000"`, `"7777"`, `"005"`, etc.
-10. Effective date configurable via `EFFECTIVE_DATE` environment variable
+1. Processes **state-level and city-level** Google Sheets files from Drive folder **concurrently**
+2. Completes processing in **20-30 seconds** (vs 157 seconds sequential) with enhanced geocode resolution
+3. **Enhanced Geocode Resolution**: Automatically detects and processes both state files (single geocode) and city files (multiple geocodes)
+4. **Hierarchical Tax Type Lookup**: City geocodes with fallback to parent state geocodes for complete tax type coverage
+5. **Product Code Conversion**: Converts hierarchical research_ids to 3-character item codes using mapping file
+6. Generates comprehensive CSV records with multi-geocode expansion for city files
+7. **Product Item Extraction**: Extracts unique product items from the same rows using Current ID + item descriptions (Columns C:J)
+8. Uploads matrix CSV to S3: `output-YYYYMMDD-HHMM/matrix_update.csv`
+9. Uploads product item CSV to S3: `output-YYYYMMDD-HHMM/product_item_update.csv` (deduplicated by converted item ID)
+10. Uploads static data files to S3: `output-YYYYMMDD-HHMM/product_group_update.csv`
+11. All values properly quoted: `"US1800000000"`, `"7777"`, `"005"`, etc.
+12. Effective date configurable via `EFFECTIVE_DATE` environment variable
 
 ### 🚀 **Performance Benchmarks**
 - **Individual Sheet Processing**: 1-2 seconds (down from 3-4 seconds)
@@ -600,6 +695,20 @@ The service is currently running successfully in production:
 - **Unmapped research_ids**: Check `errors.json` output file for `ExcludedUnmappedResearchIds` list
 - **Code padding**: Item codes are automatically padded to 3 characters with leading zeros
 - **Hierarchy normalization**: Trailing `.0` segments are removed for matching (e.g., "1.1.0.0" matches "1.1")
+
+**City-Level Processing Issues:**
+- **Unknown city files**: Check `errors.json` for files that failed both state and city geocode lookup
+- **Missing tax types**: Records excluded when neither city nor parent state has tax types for the tax_cat
+- **City geocode data**: Ensure `mapping/geo_state.csv` contains city entries with proper normalization
+- **Parent fallback**: City geocodes fall back to parent state (first 4 characters + "00000000") for tax type lookup
+- **Record multiplication**: City files generate records for ALL applicable geocodes (expected behavior)
+
+**Authentication & Access Issues:**
+- **Google Drive Permission Denied**: Ensure the Google Drive folder is shared with the service account email
+- **Secrets Manager Access**: Verify the Lambda role has `secretsmanager:GetSecretValue` permission
+- **MFA Authentication**: Use `python build.py --test-aws` to verify AWS credentials and MFA setup
+- **Workload Identity Issues**: Check audience format and service account IAM bindings if using WIF
+- **Google API Errors**: Verify Drive and Sheets APIs are enabled in the Google Cloud project
 
 **Logs Location:**
 - CloudWatch Log Group: `/aws/lambda/research-data-aggregation`

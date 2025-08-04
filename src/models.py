@@ -188,6 +188,7 @@ class LookupTables:
         self._tax_cat_lookup: Optional[Dict[str, str]] = None
         self._tax_type_lookup: Optional[Dict[Tuple[str, str], List[str]]] = None
         self._state_name_to_code: Optional[Dict[str, str]] = None
+        self._city_geocode_lookup: Optional[Dict[str, List[str]]] = None
         
         # Product code mapper for research_id to 3-character code conversion
         self.product_code_mapper = ProductCodeMapper(s3_bucket)
@@ -216,32 +217,49 @@ class LookupTables:
             return ""
     
     def _load_geocode_csv(self, s3_key: str) -> Dict[str, str]:
-        """Load geocode CSV and create state_code → geocode mapping."""
+        """Load geocode CSV and create state_code → geocode mapping, also populate city mapping."""
         try:
             csv_content = self._load_csv_from_s3(s3_key)
             if not csv_content:
                 return {}
             
-            # Parse CSV content for geocode lookup
-            lookup_dict = {}
+            # Parse CSV content for both state and city geocode lookups
+            state_lookup_dict = {}
+            city_lookup_dict = {}
             csv_reader = csv.reader(io.StringIO(csv_content))
             
             # Skip header row
             next(csv_reader, None)
             
             for row in csv_reader:
-                if len(row) >= 2:
-                    # CSV format: "geocode","state" so row[0]=geocode, row[1]=state_code
+                if len(row) >= 4:  # Need at least geocode, state, county, city columns
+                    # CSV format: "geocode","state","county","city","tax_district","jurisdiction"
                     geocode = row[0].strip().strip('"')
                     state_code = row[1].strip().strip('"')
+                    city_name = row[3].strip().strip('"') if len(row) > 3 else ""
                     
                     if geocode and state_code:
-                        # Create state_code → geocode mapping (what we need for lookup)
-                        lookup_dict[state_code] = geocode
+                        # Create state_code → geocode mapping for state-level files
+                        # Only include state-level geocodes (ending with "00000000")
+                        if geocode.endswith("00000000"):
+                            state_lookup_dict[state_code] = geocode
+                        
+                        # Create city_name → list of geocodes mapping for city-level files
+                        if city_name:
+                            city_name_upper = city_name.upper()
+                            if city_name_upper not in city_lookup_dict:
+                                city_lookup_dict[city_name_upper] = []
+                            if geocode not in city_lookup_dict[city_name_upper]:
+                                city_lookup_dict[city_name_upper].append(geocode)
             
-            logger.info(f"Loaded {len(lookup_dict)} geocode mappings from {s3_key}")
-            logger.debug(f"Sample geocode mappings: {dict(list(lookup_dict.items())[:3])}")
-            return lookup_dict
+            # Store city lookup for later use
+            self._city_geocode_lookup = city_lookup_dict
+            
+            logger.info(f"Loaded {len(state_lookup_dict)} state geocode mappings from {s3_key}")
+            logger.info(f"Loaded {len(city_lookup_dict)} city geocode mappings from {s3_key}")
+            logger.debug(f"Sample state geocode mappings: {dict(list(state_lookup_dict.items())[:3])}")
+            logger.debug(f"Sample city geocode mappings: {dict(list(city_lookup_dict.items())[:3])}")
+            return state_lookup_dict
             
         except Exception as e:
             logger.error(f"Error loading geocode lookup from {s3_key}: {e}")
@@ -341,6 +359,14 @@ class LookupTables:
             self._tax_type_lookup = self._load_tax_type_csv("mapping/unique_tax_type.csv")
         return self._tax_type_lookup
     
+    @property
+    def city_geocode_lookup(self) -> Dict[str, List[str]]:
+        """Get city name → geocodes mapping, loading if necessary."""
+        if self._city_geocode_lookup is None:
+            # Trigger loading of geocode CSV which populates both state and city lookups
+            self.geocode_lookup  # This will call _load_geocode_csv if needed
+        return self._city_geocode_lookup or {}
+    
     def get_state_name_to_code_map(self) -> Dict[str, str]:
         """Get state name to state code mapping for filename parsing."""
         if self._state_name_to_code is None:
@@ -411,6 +437,91 @@ class LookupTables:
         # Fallback to default
         logger.debug(f"No tax types found for geocode='{geocode}' and tax_cat='{tax_cat}', using default ['01']")
         return ["01"]
+    
+    def get_geocodes_for_location(self, filename: str) -> List[str]:
+        """
+        Extract location geocodes from filename with state→city fallback.
+        
+        Args:
+            filename: Research file name to extract location from
+            
+        Returns:
+            List of geocodes (single item for states, potentially multiple for cities)
+        """
+        # Step 1: Try existing state lookup logic
+        state_geocode = self.get_geocode_for_filename(filename)
+        if state_geocode:
+            logger.debug(f"Found state geocode for '{filename}': {state_geocode}")
+            return [state_geocode]
+        
+        # Step 2: Try city lookup
+        filename_upper = filename.upper()
+        city_lookup = self.city_geocode_lookup
+        
+        # Extract potential city name from filename (same logic as state extraction)
+        for city_name in city_lookup.keys():
+            if city_name in filename_upper:
+                geocodes = city_lookup[city_name]
+                logger.debug(f"Found city geocodes for '{filename}' (city: {city_name}): {geocodes}")
+                return geocodes
+        
+        # Step 3: No match found
+        logger.debug(f"No geocodes found for filename: '{filename}'")
+        return []
+    
+    def _construct_parent_geocode(self, geocode: str) -> str:
+        """Construct parent state geocode from city geocode."""
+        if len(geocode) >= 4:
+            # Extract first 4 characters + "00000000"
+            return geocode[:4] + "00000000"
+        else:
+            # For short geocodes, pad with zeros to make 4 characters, then add "00000000"
+            logger.warning(f"Short geocode format for parent construction: '{geocode}' - padding")
+            padded_prefix = geocode.ljust(4, '0')  # Pad right with zeros to make 4 chars
+            return padded_prefix + "00000000"
+    
+    def get_tax_types_with_hierarchy_fallback(self, geocode: str, tax_cat: str) -> Optional[List[str]]:
+        """Get tax types with parent geocode fallback for cities (exclusive OR logic)."""
+        # Step 1: Try direct lookup with city geocode - if found, return ONLY these
+        geocode_upper = geocode.upper().strip()
+        tax_cat_upper = tax_cat.upper().strip()
+        
+        # Try exact match first
+        key = (geocode_upper, tax_cat_upper)
+        tax_types = self.tax_type_lookup.get(key)
+        
+        if tax_types and len(tax_types) > 0:
+            logger.debug(f"Direct tax type lookup succeeded for geocode='{geocode}', tax_cat='{tax_cat}': {tax_types}")
+            return tax_types
+        
+        # Try case variations if exact match failed
+        for (lookup_geocode, lookup_tax_cat), lookup_tax_types in self.tax_type_lookup.items():
+            if (lookup_geocode.upper() == geocode_upper and 
+                lookup_tax_cat.upper() == tax_cat_upper):
+                logger.debug(f"Case-insensitive tax type lookup succeeded for geocode='{geocode}', tax_cat='{tax_cat}': {lookup_tax_types}")
+                return lookup_tax_types
+        
+        # Step 2: If no match, try parent state geocode - if found, return ONLY these
+        parent_geocode = self._construct_parent_geocode(geocode_upper)  # Use the already-normalized geocode
+        if parent_geocode != geocode_upper:  # Only try parent if it's different
+            parent_geocode_upper = parent_geocode.upper().strip()
+            parent_key = (parent_geocode_upper, tax_cat_upper)
+            parent_tax_types = self.tax_type_lookup.get(parent_key)
+            
+            if parent_tax_types and len(parent_tax_types) > 0:
+                logger.debug(f"Parent tax type lookup succeeded for geocode='{geocode}' (parent: {parent_geocode}), tax_cat='{tax_cat}': {parent_tax_types}")
+                return parent_tax_types
+            
+            # Try case variations for parent
+            for (lookup_geocode, lookup_tax_cat), lookup_tax_types in self.tax_type_lookup.items():
+                if (lookup_geocode.upper() == parent_geocode_upper and 
+                    lookup_tax_cat.upper() == tax_cat_upper):
+                    logger.debug(f"Case-insensitive parent tax type lookup succeeded for geocode='{geocode}' (parent: {parent_geocode}), tax_cat='{tax_cat}': {lookup_tax_types}")
+                    return lookup_tax_types
+        
+        # Step 3: If still no match, return None (caller should exclude this geocode and log error)
+        logger.debug(f"No tax types found for geocode='{geocode}', tax_cat='{tax_cat}' - will be excluded from output")
+        return None
     
     async def initialize_product_code_mapper(self) -> None:
         """Initialize the product code mapper by loading mapping data."""
